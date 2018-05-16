@@ -27,7 +27,7 @@ setup(
     name="aiozk",
     version=get_version(),
     description="AsyncIO client for ZooKeeper",
-    packages=["aiozk"],
+    packages=["aiozk", "aiozk_recipes"],
     python_requires=">=3.6.0",
     install_requires=get_install_requires(),
 )

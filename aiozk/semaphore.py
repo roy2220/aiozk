@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import itertools
 import typing
 
 
@@ -161,24 +162,21 @@ class Semaphore:
 
         self._max_value += max_value_increment
 
-    def close(self, error_class: typing.Type[Exception]=asyncio.CancelledError) -> None:
+    def close(self, error_class: typing.Optional[typing.Type[Exception]]=None) -> None:
         assert not self._is_closed
         self._is_closed = True
 
-        for waiter in self._down_waiters.values():
-            if waiter.cancelled():
-                continue
+        if error_class is None:
+            for waiter in itertools.chain(self._down_waiters.values(), self._up_waiters.values()):
+                waiter.cancel()
+        else:
+            for waiter in itertools.chain(self._down_waiters.values(), self._up_waiters.values()):
+                if waiter.cancelled():
+                    continue
 
-            waiter.set_exception(error_class())
+                waiter.set_exception(error_class())
 
         self._down_waiters.clear()
-
-        for waiter in self._up_waiters.values():
-            if waiter.cancelled():
-                continue
-
-            waiter.set_exception(error_class())
-
         self._up_waiters.clear()
 
     def is_closed(self) -> bool:

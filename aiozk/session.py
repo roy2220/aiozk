@@ -36,8 +36,8 @@ class Watcher:
     def get_path(self) -> str:
         return self._path
 
-    async def wait_for_event(self) -> protocol.WatcherEventType:
-        return await self._event
+    def wait_for_event(self) -> "asyncio.Future[protocol.WatcherEventType]":
+        return asyncio.shield(self._event)
 
 
 class _Operation:
@@ -289,9 +289,6 @@ class Session:
                 for path_2_watchers in self._watchers:
                     for watchers in path_2_watchers.values():
                         for watcher in watchers:
-                            if watcher._event.cancelled():
-                                continue
-
                             watcher._event.set_exception(error_class2())
 
                     path_2_watchers.clear()
@@ -546,9 +543,6 @@ class Session:
                 continue
 
             for watcher in watchers:
-                if watcher._event.cancelled():
-                    continue
-
                 watcher._event.set_result(watcher_event_type)
 
     def _reset(self, final_state: SessionState, event_type: SessionEventType) -> None:

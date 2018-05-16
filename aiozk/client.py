@@ -57,7 +57,7 @@ class Client:
         self._auth_infos: typing.Set[session.AuthInfo] = set(auth_infos)
         self._default_acl = tuple(default_acl)
         assert len(self._default_acl) >= 1
-        self._task: asyncio.Future[None] = asyncio.Future(loop=self._get_loop())
+        self._task: asyncio.Future[None] = asyncio.Future(loop=self.get_loop())
         self._task.set_result(None)
 
     def add_session_listener(self) -> session.SessionListener:
@@ -68,7 +68,7 @@ class Client:
 
     async def start(self) -> None:
         assert not self.is_running()
-        task = self._get_loop().create_task(self._run())
+        task = self.get_loop().create_task(self._run())
         session_listener = self._session.add_listener()
         await session_listener.get_state_change()
         self._session.remove_listener(session_listener)
@@ -78,8 +78,8 @@ class Client:
         assert self.is_running()
         self._task.cancel()
 
-    async def wait_for_stopped(self) -> None:
-        await asyncio.shield(self._task)
+    def wait_for_stopped(self) -> "asyncio.Future[None]":
+        return asyncio.shield(self._task)
 
     def is_running(self) -> bool:
         return not self._task.done()
@@ -176,7 +176,7 @@ class Client:
                 else:
                     assert False
 
-                watcher = session.Watcher(watcher_type, path, self._get_loop())
+                watcher = session.Watcher(watcher_type, path, self.get_loop())
                 self._session.add_watcher(watcher)
         else:
             on_completed = None
@@ -202,7 +202,7 @@ class Client:
         if watch:
             def on_completed(non_error_class: typing.Optional[typing.Type[errors.Error]]) -> None:
                 nonlocal watcher
-                watcher = session.Watcher(session.WatcherType.DATA, path, self._get_loop())
+                watcher = session.Watcher(session.WatcherType.DATA, path, self.get_loop())
                 self._session.add_watcher(watcher)
         else:
             on_completed = None
@@ -227,7 +227,7 @@ class Client:
         if watch:
             def on_completed(non_error_class: typing.Optional[typing.Type[errors.Error]]) -> None:
                 nonlocal watcher
-                watcher = session.Watcher(session.WatcherType.CHILD, path, self._get_loop())
+                watcher = session.Watcher(session.WatcherType.CHILD, path, self.get_loop())
                 self._session.add_watcher(watcher)
         else:
             on_completed = None
@@ -252,7 +252,7 @@ class Client:
         if watch:
             def on_completed(non_error_class: typing.Optional[typing.Type[errors.Error]]) -> None:
                 nonlocal watcher
-                watcher = session.Watcher(session.WatcherType.CHILD, path, self._get_loop())
+                watcher = session.Watcher(session.WatcherType.CHILD, path, self.get_loop())
                 self._session.add_watcher(watcher)
         else:
             on_completed = None
@@ -314,13 +314,19 @@ class Client:
             auto_retry,
         )
 
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        return self._session.get_loop()
+
+    def get_logger(self) -> logging.Logger:
+        return self._session.get_logger()
+
     async def _run(self) -> None:
         while True:
             server = heapq.heappop(self._servers)
 
             try:
-                host_name, port_number = await server.get_address(self._get_loop()
-                                                                  , self._get_logger())
+                host_name, port_number = await server.get_address(self.get_loop()
+                                                                  , self.get_logger())
                 await self._session.connect(host_name, port_number, self._auth_infos)
                 server.up()
                 await self._session.dispatch()
@@ -340,7 +346,7 @@ class Client:
             ):
                 break
             except Exception:
-                self._get_logger().exception("client running failure:")
+                self.get_logger().exception("client running failure:")
                 break
             finally:
                 heapq.heappush(self._servers, server)
@@ -349,9 +355,3 @@ class Client:
             self._session.close()
 
         self._session.remove_all_listeners()
-
-    def _get_loop(self) -> asyncio.AbstractEventLoop:
-        return self._session.get_loop()
-
-    def _get_logger(self) -> logging.Logger:
-        return self._session.get_logger()

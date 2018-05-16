@@ -67,7 +67,7 @@ class Deque(typing.Generic[_T]):
     def commit_item_removals(self, number_of_item_removals: int) -> None:
         self._semaphore.increase_max_value(number_of_item_removals)
 
-    def close(self, error_class: typing.Type[Exception]=asyncio.CancelledError) -> None:
+    def close(self, error_class: typing.Optional[typing.Type[Exception]]=None) -> None:
         self._semaphore.close(error_class)
         self._items.clear()
 
