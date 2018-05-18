@@ -39,6 +39,9 @@ class Watcher:
     def wait_for_event(self) -> "asyncio.Future[protocol.WatcherEventType]":
         return asyncio.shield(self._event)
 
+    def __repr__(self) -> str:
+        return "Watcher(type={}, path={})".format(self._type, self._path)
+
 
 class _Operation:
     def __init__(self, op_code: protocol.OpCode, request, auto_retry: bool
@@ -178,11 +181,17 @@ class Session:
         error_class = _FINAL_SESSION_STATE_2_ERROR_CLASS.get(self._state, None)
 
         if error_class is not None:
-            raise error_class()
+            error_message = "request: {}".format(request)
+            raise error_class(error_message)
 
         operation = _Operation(op_code, request, auto_retry, on_completed, non_error_classes
                                , self.get_loop())
-        await self._pending_operations1.insert_tail(operation)
+        try:
+            await self._pending_operations1.insert_tail(operation)
+        except errors.Error as error:
+            error_class = type(error)
+            error_message = "request: {}".format(request)
+            raise error_class(error_message)
 
         try:
             return await operation.response
@@ -258,7 +267,8 @@ class Session:
                     if need_retry and operation.auto_retry:
                         self._pending_operations1.try_insert_tail(operation)
                     else:
-                        operation.response.set_exception(error_class())
+                        error_message = "request: {}".format(operation.request)
+                        operation.response.set_exception(error_class(error_message))
 
                 self._pending_operations2.clear()
             else:
@@ -271,7 +281,8 @@ class Session:
                     if operation.response.cancelled():
                         continue
 
-                    operation.response.set_exception(error_class2())
+                    error_message = "request: {}".format(operation.request)
+                    operation.response.set_exception(error_class2(error_message))
 
                 self._pending_operations1.close(error_class2)
 
@@ -279,17 +290,20 @@ class Session:
                     if operation.response.cancelled():
                         continue
 
+                    error_message = "request: {}".format(operation.request)
+
                     if need_retry and operation.auto_retry:
-                        operation.response.set_exception(error_class2())
+                        operation.response.set_exception(error_class2(error_message))
                     else:
-                        operation.response.set_exception(error_class())
+                        operation.response.set_exception(error_class(error_message))
 
                 self._pending_operations2.clear()
 
                 for path_2_watchers in self._watchers:
                     for watchers in path_2_watchers.values():
                         for watcher in watchers:
-                            watcher._event.set_exception(error_class2())
+                            error_message = "watcher: {}".format(watcher)
+                            watcher._event.set_exception(error_class2(error_message))
 
                     path_2_watchers.clear()
 
@@ -338,7 +352,8 @@ class Session:
 
         if response.time_out <= 0:
             self._reset(SessionState.CLOSED, SessionEventType.SESSION_EXPIRED)
-            raise errors.SessionExpiredError()
+            error_message = "request: {}".format(request)
+            raise errors.SessionExpiredError(error_message)
 
         try:
             yield
@@ -430,7 +445,8 @@ class Session:
 
             if reply_header.err != 0:
                 error_class = errors.get_error_class(reply_header.err)
-                raise error_class()
+                error_message = "request: {}".format(request)
+                raise error_class(error_message)
 
             if reply_header.xid == xid:
                 break
@@ -509,7 +525,8 @@ class Session:
                     error_class = errors.get_error_class(reply_header.err)
 
                     if error_class not in operation.non_error_classes:
-                        operation.response.set_exception(error_class())
+                        error_message = "request: {}".format(operation.request)
+                        operation.response.set_exception(error_class(error_message))
                         continue
 
                     non_error_class = error_class
@@ -551,12 +568,6 @@ class Session:
         self._password = b""
         self._last_zxid = Long(0)
         self._set_state(final_state, event_type)
-
-
-class _EventCategory(enum.IntEnum):
-    DATA = 0
-    EXIST = 1
-    CHILD = 2
 
 
 _MAX_NUMBER_OF_PENDING_OPERATIONS = 1 << 16
