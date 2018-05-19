@@ -10,7 +10,7 @@ _ERROR_CODE_2_ERROR_CLASS: typing.Dict[int, typing.Type[Error]] = {}
 
 def _register_error(error_code: int) -> typing.Callable[[typing.Type[Error]], typing.Type[Error]]:
     def do_register_error(error_class: typing.Type[Error]) -> typing.Type[Error]:
-        assert issubclass(error_class, Error)
+        assert issubclass(error_class, Error), repr(error_class)
         error_class.CODE = error_code
         _ERROR_CODE_2_ERROR_CLASS[error_code] = error_class
         return error_class

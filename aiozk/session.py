@@ -37,10 +37,17 @@ class Watcher:
         return self._path
 
     def wait_for_event(self) -> "asyncio.Future[protocol.WatcherEventType]":
-        return asyncio.shield(self._event)
+        return self._event if self._event.done() else asyncio.shield(self._event)
+
+    def remove(self):
+        assert not self.is_removed()
+        self._event.cancel()
+
+    def is_removed(self) -> bool:
+        return self._event.done()
 
     def __repr__(self) -> str:
-        return "Watcher(type={}, path={})".format(self._type, self._path)
+        return "<Watcher: type={!r}, path={!r}>".format(self._type, self._path)
 
 
 class _Operation:
@@ -144,7 +151,7 @@ class Session:
         self._set_state(SessionState.CONNECTED, SessionEventType.CONNECTED)
 
     async def dispatch(self) -> None:
-        assert self._state is SessionState.CONNECTED
+        assert self._state is SessionState.CONNECTED, repr(self._state)
         loop = self.get_loop()
 
         tasks = (
@@ -177,11 +184,11 @@ class Session:
     async def execute_operation(self, op_code: protocol.OpCode, request, auto_retry: bool
                                 , on_completed: typing.Optional[typing.Callable[[typing.Type[errors\
         .Error]], None]]=None, non_error_classes: typing.Sequence[typing.Type[errors.Error]]=()):
-        assert isinstance(request, protocol.get_request_class(op_code))
+        assert isinstance(request, protocol.get_request_class(op_code)), repr((op_code, request))
         error_class = _FINAL_SESSION_STATE_2_ERROR_CLASS.get(self._state, None)
 
         if error_class is not None:
-            error_message = "request: {}".format(request)
+            error_message = "request: {!r}".format(request)
             raise error_class(error_message)
 
         operation = _Operation(op_code, request, auto_retry, on_completed, non_error_classes
@@ -189,9 +196,9 @@ class Session:
         try:
             await self._pending_operations1.insert_tail(operation)
         except errors.Error as error:
-            error_class = type(error)
-            error_message = "request: {}".format(request)
-            raise error_class(error_message)
+            error_message = "request: {!r}".format(request)
+            error.args = error_message,
+            raise
 
         try:
             return await operation.response
@@ -225,7 +232,7 @@ class Session:
         error_class: typing.Optional[typing.Type[errors.Error]] = None
 
         if old_state is SessionState.CLOSED:
-            assert new_state is SessionState.CONNECTING
+            assert new_state is SessionState.CONNECTING, repr(new_state)
         elif old_state is SessionState.CONNECTING:
             if old_state is new_state:
                 return
@@ -240,18 +247,18 @@ class Session:
             elif new_state is SessionState.AUTH_FAILED:
                 error_class = errors.AuthFailedError
             else:
-                assert False
+                assert False, repr(new_state)
         elif old_state is SessionState.CONNECTED:
             if new_state is SessionState.CLOSED:
                 error_class = errors.ConnectionLossError
             elif new_state is SessionState.CONNECTING:
                 error_class = errors.ConnectionLossError
             else:
-                assert False
+                assert False, repr(new_state)
         elif old_state is SessionState.AUTH_FAILED:
-            assert new_state is SessionState.CONNECTING
+            assert new_state is SessionState.CONNECTING, repr(new_state)
         else:
-            assert False
+            assert False, repr(old_state)
 
         if error_class is not None:
             need_retry = error_class is errors.ConnectionLossError
@@ -267,7 +274,7 @@ class Session:
                     if need_retry and operation.auto_retry:
                         self._pending_operations1.try_insert_tail(operation)
                     else:
-                        error_message = "request: {}".format(operation.request)
+                        error_message = "request: {!r}".format(operation.request)
                         operation.response.set_exception(error_class(error_message))
 
                 self._pending_operations2.clear()
@@ -281,7 +288,7 @@ class Session:
                     if operation.response.cancelled():
                         continue
 
-                    error_message = "request: {}".format(operation.request)
+                    error_message = "request: {!r}".format(operation.request)
                     operation.response.set_exception(error_class2(error_message))
 
                 self._pending_operations1.close(error_class2)
@@ -290,7 +297,7 @@ class Session:
                     if operation.response.cancelled():
                         continue
 
-                    error_message = "request: {}".format(operation.request)
+                    error_message = "request: {!r}".format(operation.request)
 
                     if need_retry and operation.auto_retry:
                         operation.response.set_exception(error_class2(error_message))
@@ -302,15 +309,17 @@ class Session:
                 for path_2_watchers in self._watchers:
                     for watchers in path_2_watchers.values():
                         for watcher in watchers:
-                            error_message = "watcher: {}".format(watcher)
+                            if watcher.is_removed():
+                                continue
+
+                            error_message = "watcher: {!r}".format(watcher)
                             watcher._event.set_exception(error_class2(error_message))
 
                     path_2_watchers.clear()
 
         self._state = new_state
-        self.get_logger().info("session state change: session_id={} session_state={}"
-                               " session_event_type{}"
-                               .format(hex(self._id), repr(self._state), repr(event_type)))
+        self.get_logger().info("session state change: session_id={:#x} session_state={!r}"
+                               " session_event_type={!r}".format(self._id, self._state, event_type))
 
         for listener in self._listeners:
             listener._state_changes.put_nowait((self._state, event_type))
@@ -352,7 +361,7 @@ class Session:
 
         if response.time_out <= 0:
             self._reset(SessionState.CLOSED, SessionEventType.SESSION_EXPIRED)
-            error_message = "request: {}".format(request)
+            error_message = "request: {!r}".format(request)
             raise errors.SessionExpiredError(error_message)
 
         try:
@@ -394,7 +403,10 @@ class Session:
         paths: typing.Tuple[typing.List[str], typing.List[str], typing.List[str]] = ([], [], [])
 
         for watcher_type, path_2_watchers in enumerate(self._watchers):
-            for path in path_2_watchers.keys():
+            for path, watchers in path_2_watchers.items():
+                if all(watcher.is_removed() for watcher in watchers):
+                    continue
+
                 path_size = _STRING_OVERHEAD_SIZE + len(path.encode())
 
                 if request_size + path_size > _MAX_SETWATCHES_SIZE:
@@ -424,7 +436,7 @@ class Session:
 
     async def _execute_operation(self, transport: Transport, xid: int, op_code: protocol.OpCode
                                  , request):
-        assert isinstance(request, protocol.get_request_class(op_code))
+        assert isinstance(request, protocol.get_request_class(op_code)), repr((op_code, request))
         buffer = bytearray()
         request_header = protocol.RequestHeader(xid=xid, type=op_code)
         serialize_record(request_header, buffer)
@@ -432,11 +444,7 @@ class Session:
         transport.write(buffer)
 
         while True:
-            try:
-                data = await transport.read(self._get_read_timeout())
-            except Exception as e:
-                raise
-
+            data = await transport.read(self._get_read_timeout())
             reply_header: protocol.ReplyHeader
             reply_header, data_offset = deserialize_record(protocol.ReplyHeader, data)
 
@@ -445,7 +453,7 @@ class Session:
 
             if reply_header.err != 0:
                 error_class = errors.get_error_class(reply_header.err)
-                error_message = "request: {}".format(request)
+                error_message = "request: {!r}".format(request)
                 raise error_class(error_message)
 
             if reply_header.xid == xid:
@@ -459,7 +467,7 @@ class Session:
             elif reply_header.xid == -2:  # -2 is the xid for pings
                 pass
             else:
-                self.get_logger().info("ignored reply: reply_header={}".format(reply_header))
+                self.get_logger().info("ignored reply: reply_header={!r}".format(reply_header))
 
         response, _ = deserialize_record(protocol.get_response_class(op_code), data, data_offset)
         return response
@@ -504,12 +512,13 @@ class Session:
                 elif reply_header.xid == -2:  # -2 is the xid for pings
                     pass
                 else:
-                    self.get_logger().info("ignored reply: reply_header={}".format(reply_header))
+                    self.get_logger().info("ignored reply: reply_header={!r}".format(reply_header))
             else:
                 operation = self._pending_operations2.pop(reply_header.xid, None)
 
                 if operation is None:
-                    self.get_logger().info("missing operation: xid={}".format(reply_header.xid))
+                    self.get_logger().info("missing operation: reply_header={!r}"
+                                           .format(reply_header))
                     continue
 
                 self._pending_operations1.commit_item_removals(1)
@@ -525,7 +534,7 @@ class Session:
                     error_class = errors.get_error_class(reply_header.err)
 
                     if error_class not in operation.non_error_classes:
-                        error_message = "request: {}".format(operation.request)
+                        error_message = "request: {!r}".format(operation.request)
                         operation.response.set_exception(error_class(error_message))
                         continue
 
@@ -556,14 +565,18 @@ class Session:
             watchers = path_2_watchers.pop(path, None)
 
             if watchers is None:
-                self.get_logger().info("missing watcher: watcher_type={}".format(watcher_type))
+                self.get_logger().info("missing watcher: watcher_event_type={!r} path={!r}"
+                                       .format(watcher_event_type, path))
                 continue
 
             for watcher in watchers:
+                if watcher.is_removed():
+                    continue
+
                 watcher._event.set_result(watcher_event_type)
 
     def _reset(self, final_state: SessionState, event_type: SessionEventType) -> None:
-        assert final_state in _FINAL_SESSION_STATES
+        assert final_state in _FINAL_SESSION_STATES, repr(final_state)
         self._id = Long(0)
         self._password = b""
         self._last_zxid = Long(0)

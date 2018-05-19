@@ -8,7 +8,7 @@ class Lock:
     def __init__(self, client: aiozk.Client, path: str) -> None:
         method_lock.init(self, client.get_loop())
         self._client = client
-        self._path = path
+        self._path = client.normalize_path(path)
         self._my_locker_path = ""
 
     @method_lock.locked_method
@@ -50,7 +50,9 @@ class Lock:
             result, watcher = await self._client.exists(self._path + "/" + locker_names2\
                 [my_locker_index - 1], True, auto_retry=True)
 
-            if result is not None:
+            if result is None:
+                watcher.remove()
+            else:
                 await watcher.wait_for_event()
 
             (locker_names,), _ = await self._client.get_children(self._path, auto_retry=True)
@@ -114,7 +116,9 @@ class SharedLock(Lock):
             result, watcher = await self._client.exists(self._path + "/" + locker_names3\
                 [my_locker_index - 1], True, auto_retry=True)
 
-            if result is not None:
+            if result is None:
+                watcher.remove()
+            else:
                 await watcher.wait_for_event()
 
             (locker_names,), _ = await self._client.get_children(self._path, auto_retry=True)

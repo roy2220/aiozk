@@ -7,7 +7,7 @@ import typing
 class Semaphore:
     def __init__(self, min_value: int, max_value: int, value: int
                  , loop: asyncio.AbstractEventLoop) -> None:
-        assert value >= min_value and value <= max_value
+        assert value >= min_value and value <= max_value, repr((min_value, value, max_value))
         self._min_value = min_value
         self._max_value = max_value
         self._value = value
@@ -139,7 +139,7 @@ class Semaphore:
         return True
 
     def decrease_min_value(self, min_value_decrement: int) -> None:
-        assert min_value_decrement >= 0
+        assert min_value_decrement >= 0, repr(min_value_decrement)
         assert not self._is_closed
 
         if min_value_decrement == 0:
@@ -151,7 +151,7 @@ class Semaphore:
         self._min_value -= min_value_decrement
 
     def increase_max_value(self, max_value_increment: int) -> None:
-        assert max_value_increment >= 0
+        assert max_value_increment >= 0, repr(max_value_increment)
         assert not self._is_closed
 
         if max_value_increment == 0:

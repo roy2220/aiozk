@@ -254,7 +254,7 @@ class MultiRequest(typing.NamedTuple):
 
     def serialize(self, buffer: bytearray) -> None:
         for op in self.ops:
-            assert isinstance(op[1], get_request_class(op[0]))
+            assert isinstance(op[1], get_request_class(op[0])), repr(op)
 
             serialize_record(MultiHeader(
                 type=op[0],
@@ -294,7 +294,7 @@ class MultiRequest(typing.NamedTuple):
 
         if value is not None:
             for op in value.ops:
-                assert isinstance(op[1], get_request_class(op[0]))
+                assert isinstance(op[1], get_request_class(op[0])), repr(op)
                 size += get_size(MultiHeader)
                 get_size(type(op[1]), op[1])
 
@@ -309,7 +309,7 @@ class MultiResponse(typing.NamedTuple):
 
     def serialize(self, buffer: bytearray) -> None:
         for op_result in self.op_results:
-            assert isinstance(op_result[1], get_request_class(op_result[0]))
+            assert isinstance(op_result[1], get_request_class(op_result[0])), repr(op_result)
             err = op_result[1].err if op_result[0] is OpCode.ERROR else 0
 
             serialize_record(MultiHeader(
@@ -349,7 +349,7 @@ class MultiResponse(typing.NamedTuple):
 
         if value is not None:
             for op_result in value.op_results:
-                assert isinstance(op_result[1], get_request_class(op_result[0]))
+                assert isinstance(op_result[1], get_request_class(op_result[0])), repr(op_result)
                 size += get_size(MultiHeader)
                 get_size(type(op_result[1]), op_result[1])
 

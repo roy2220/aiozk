@@ -1,6 +1,7 @@
 import asyncio
 import heapq
 import logging
+import re
 import time
 import typing
 
@@ -28,8 +29,8 @@ class _Server():
                           , logger: logging.Logger) -> ServerAddress:
         now = time.time()
         wait_time = max(self.last_address_access_time + (1.5 ** self.weight - 1) - now, 0.0)
-        logger.info("server address getting: server_address={} wait_time={}"
-                    .format(repr(self.address), repr(wait_time)))
+        logger.info("server address getting: server_address={!r} wait_time={!r}"
+                    .format(self.address, wait_time))
 
         if wait_time > 0.001:
             await asyncio.sleep(wait_time, loop=loop)
@@ -47,16 +48,19 @@ class Client:
         logger=logging.getLogger(),
         session_timeout=4.0,
         server_addresses: typing.Iterable[ServerAddress]=(("127.0.0.1", 2181),),
+        path_prefix = "/",
         auth_infos: typing.Iterable[session.AuthInfo]=(),
         default_acl: typing.Iterable[protocol.ACL]=(protocol.Ids.OPEN_ACL_UNSAFE,),
     ) -> None:
         self._session = session.Session(loop, logger, session_timeout)
         self._servers: typing.List[_Server] = list((_Server(server_address) for server_address \
             in set(server_addresses)))
-        assert len(self._servers) >= 1
+        assert len(self._servers) >= 1, repr(self._servers)
+        assert path_prefix.startswith("/"), repr(path_prefix)
+        self._path_prefix = _RE1.sub("/", path_prefix + "/")
         self._auth_infos: typing.Set[session.AuthInfo] = set(auth_infos)
         self._default_acl = tuple(default_acl)
-        assert len(self._default_acl) >= 1
+        assert len(self._default_acl) >= 1, repr(self._default_acl)
         self._task: asyncio.Future[None] = asyncio.Future(loop=self.get_loop())
         self._task.set_result(None)
 
@@ -79,13 +83,27 @@ class Client:
         self._task.cancel()
 
     def wait_for_stopped(self) -> "asyncio.Future[None]":
-        return asyncio.shield(self._task)
+         return self._task if self._task.done() else asyncio.shield(self._task)
+
+    def normalize_path(self, path: str) -> str:
+        assert len(path) >= 1, repr(path)
+        path = _RE1.sub("/", path + "/")
+
+        if path[0] == "/":
+            if path != "/":
+                path = path[:-1]
+        else:
+            path = self._path_prefix + path[:-1]
+
+        return path
 
     def is_running(self) -> bool:
         return not self._task.done()
 
     def create_op(self, path: str, data: typing.Union[bytes, bytearray]=b"", acl: typing.Iterable\
         [protocol.ACL]=(), ephemeral=False, sequential=False) -> protocol.Op:
+        path = self.normalize_path(path)
+
         if acl is ():
             acl = self._default_acl
 
@@ -113,6 +131,8 @@ class Client:
         return await self._session.execute_operation(*self.create_op(*args, **kwargs), auto_retry)
 
     def delete_op(self, path: str, version=-1) -> protocol.Op:
+        path = self.normalize_path(path)
+
         return protocol.OpCode.DELETE, protocol.DeleteRequest(
             path=path,
             version=version,
@@ -124,6 +144,8 @@ class Client:
         await self._session.execute_operation(*self.delete_op(*args, **kwargs), auto_retry)
 
     def set_data_op(self, path: str, data: bytes, version=-1) -> protocol.Op:
+        path = self.normalize_path(path)
+
         return protocol.OpCode.SET_DATA, protocol.SetDataRequest(
             path=path,
             data=data,
@@ -136,6 +158,8 @@ class Client:
         return await self._session.execute_operation(*self.set_data_op(*args, **kwargs), auto_retry)
 
     def check_op(self, path: str, version=-1) -> protocol.Op:
+        path = self.normalize_path(path)
+
         return protocol.OpCode.CHECK, protocol.CheckVersionRequest(
             path=path,
             version=version,
@@ -163,6 +187,7 @@ class Client:
     async def exists(self, path: str, watch: bool=False, *, auto_retry=False) -> typing.Tuple\
         [typing.Optional[protocol.ExistsResponse], typing.Optional[session.Watcher]]:
         assert self.is_running()
+        path = self.normalize_path(path)
         watcher = None
 
         if watch:
@@ -174,7 +199,7 @@ class Client:
                 elif non_error_class is errors.NoNodeError:
                     watcher_type = session.WatcherType.EXIST
                 else:
-                    assert False
+                    assert False, repr(non_error_class)
 
                 watcher = session.Watcher(watcher_type, path, self.get_loop())
                 self._session.add_watcher(watcher)
@@ -197,6 +222,7 @@ class Client:
     async def get_data(self, path: str, watch: bool=False, *, auto_retry=False) -> typing.Tuple\
         [protocol.GetDataResponse, typing.Optional[session.Watcher]]:
         assert self.is_running()
+        path = self.normalize_path(path)
         watcher = None
 
         if watch:
@@ -222,6 +248,7 @@ class Client:
     async def get_children(self, path: str, watch: bool=False, *, auto_retry=False) -> typing\
         .Tuple[protocol.GetChildrenResponse, typing.Optional[session.Watcher]]:
         assert self.is_running()
+        path = self.normalize_path(path)
         watcher = None
 
         if watch:
@@ -247,6 +274,7 @@ class Client:
     async def get_children2(self, path: str, watch: bool=False, *, auto_retry=False) -> typing\
         .Tuple[protocol.GetChildren2Response, typing.Optional[session.Watcher]]:
         assert self.is_running()
+        path = self.normalize_path(path)
         watcher = None
 
         if watch:
@@ -271,6 +299,7 @@ class Client:
 
     async def get_acl(self, path: str, *, auto_retry=False) -> protocol.GetACLResponse:
         assert self.is_running()
+        path = self.normalize_path(path)
 
         return await self._session.execute_operation(
             protocol.OpCode.GET_ACL,
@@ -285,6 +314,7 @@ class Client:
     async def set_acl(self, path: str, acl: typing.Iterable[protocol.ACL]=(), version=-1, *
                       , auto_retry=False) -> protocol.SetACLResponse:
         assert self.is_running()
+        path = self.normalize_path(path)
 
         if acl is ():
             acl = self._default_acl
@@ -303,6 +333,7 @@ class Client:
 
     async def sync(self, path: str, *, auto_retry=False) -> protocol.SyncResponse:
         assert self.is_running()
+        path = self.normalize_path(path)
 
         return await self._session.execute_operation(
             protocol.OpCode.SYNC,
@@ -313,6 +344,51 @@ class Client:
 
             auto_retry,
         )
+
+    async def create_p(self, path: str) -> None:
+        path = self.normalize_path(path)
+
+        if path == "/":
+            return
+
+        node_names = path[1:].split("/")
+
+        while True:
+            path = ""
+
+            try:
+                for node_name in node_names:
+                    path += "/" + node_name
+
+                    try:
+                        await self.create(path, auto_retry=True)
+                    except errors.NodeExistsError:
+                        pass
+            except errors.NoNodeError:
+                continue
+            else:
+                return
+
+    async def delete_r(self, path: str) -> None:
+        path = self.normalize_path(path)
+
+        while True:
+            try:
+                (children,), _ = await self.get_children(path, auto_retry=True)
+            except errors.NoNodeError:
+                return
+
+            for child in children:
+                await self.delete_r(path + "/" + child)
+
+            try:
+                await self.delete(path, auto_retry=True)
+            except errors.NotEmptyError:
+                continue
+            except errors.NoNodeError:
+                return
+            else:
+                return
 
     def get_loop(self) -> asyncio.AbstractEventLoop:
         return self._session.get_loop()
@@ -355,3 +431,6 @@ class Client:
             self._session.close()
 
         self._session.remove_all_listeners()
+
+
+_RE1 = re.compile(r"//+")

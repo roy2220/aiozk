@@ -11,7 +11,7 @@ class _QueueBase:
     def __init__(self, client: aiozk.Client, path: str, lock: Lock) -> None:
         method_lock.init(self, client.get_loop())
         self._client = client
-        self._path = path
+        self._path = client.normalize_path(path)
         self._lock = lock
 
     @method_lock.locked_method
@@ -24,6 +24,9 @@ class _QueueBase:
                                                                          , auto_retry=True)
 
                 if len(item_names) >= 1:
+                    if not watcher.is_removed():
+                        watcher.remove()
+
                     item_names2 = sorted(item_names, key=lambda item_name: item_name.rsplit("-"
                                                                                             , 1)[1])
                     if max_number_of_items >= 0:
@@ -54,7 +57,7 @@ class _QueueBase:
 
     async def _enqueue(self, item_name_prefix_end: str
                        , item_data: typing.Union[bytes, bytearray]) -> None:
-        assert "-" not in item_name_prefix_end
+        assert "-" not in item_name_prefix_end, repr(item_name_prefix_end)
         item_name_prefix = uuid.uuid4().hex + "-" + item_name_prefix_end
 
         while True:
@@ -68,7 +71,7 @@ class _QueueBase:
 
             (children,), _ = await self._client.get_children(self._path, auto_retry=True)
 
-            if next((True for child in children if child.startswith(item_name_prefix)), False):
+            if any(child.startswith(item_name_prefix) for child in children):
                 return
 
 
@@ -85,6 +88,6 @@ class PriorityQueue(_QueueBase):
 
     def enqueue(self, item_priority: int, item_data: typing.Union[bytes, bytearray]) \
         -> typing.Awaitable[None]:
-        assert item_priority in range(_MAX_PRIORITY_QUEUE_ITEM_PRIORITY + 1)
+        assert item_priority in range(_MAX_PRIORITY_QUEUE_ITEM_PRIORITY + 1), repr(item_priority)
         return self._enqueue("%.3d." % (_MAX_PRIORITY_QUEUE_ITEM_PRIORITY - item_priority)
                              , item_data)
