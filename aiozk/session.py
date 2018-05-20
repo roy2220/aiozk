@@ -2,6 +2,7 @@ import asyncio
 import collections
 import enum
 import logging
+import time
 import typing
 
 import async_generator
@@ -47,7 +48,7 @@ class Watcher:
         return self._event.done()
 
     def __repr__(self) -> str:
-        return "<Watcher: type={!r}, path={!r}>".format(self._type, self._path)
+        return "<Watcher: type={!r} path={!r}>".format(self._type, self._path)
 
 
 class _Operation:
@@ -134,7 +135,7 @@ class Session:
 
         self._listeners.clear()
 
-    async def connect(self, host_name: str, port_number: int
+    async def connect(self, host_name: str, port_number: int, connect_deadline: float
                       , auth_infos: typing.Iterable[AuthInfo]) -> None:
         if self.is_closed():
             event_type = SessionEventType.CONNECTING
@@ -143,10 +144,10 @@ class Session:
 
         self._set_state(SessionState.CONNECTING, event_type)
 
-        async with self._connect_transport(host_name, port_number) as transport:
-            async with self._connect(transport):
-                await self._authenticate(transport, auth_infos)
-                await self._rewatch(transport)
+        async with self._connect_transport(host_name, port_number, connect_deadline) as transport:
+            async with self._do_connect(transport, connect_deadline):
+                await self._authenticate(transport, connect_deadline, auth_infos)
+                await self._rewatch(transport, connect_deadline)
 
         self._set_state(SessionState.CONNECTED, SessionEventType.CONNECTED)
 
@@ -175,11 +176,8 @@ class Session:
             task2.result()
 
     def close(self) -> None:
-        self._close(self._transport)
-        self._transport.close()
-
-        if self._state not in _FINAL_SESSION_STATES:
-            self._reset(SessionState.CLOSED, SessionEventType.CLOSED)
+        assert not self.is_closed()
+        self._reset(SessionState.CLOSED, SessionEventType.CLOSED)
 
     async def execute_operation(self, op_code: protocol.OpCode, request, auto_retry: bool
                                 , on_completed: typing.Optional[typing.Callable[[typing.Type[errors\
@@ -224,8 +222,11 @@ class Session:
     def get_logger(self) -> logging.Logger:
         return self._transport.get_logger()
 
+    def get_timeout(self) -> float:
+        return self._timeout
+
     def is_closed(self) -> bool:
-        return self._transport.is_closed()
+        return self._state in _FINAL_SESSION_STATES
 
     def _set_state(self, new_state: SessionState, event_type: SessionEventType) -> None:
         old_state = self._state
@@ -279,6 +280,10 @@ class Session:
 
                 self._pending_operations2.clear()
             else:
+                if not self._transport.is_closed():
+                    self._do_close(self._transport)
+                    self._transport.close()
+
                 while True:
                     operation = self._pending_operations1.try_remove_head()
 
@@ -325,10 +330,11 @@ class Session:
             listener._state_changes.put_nowait((self._state, event_type))
 
     @async_generator.asynccontextmanager
-    async def _connect_transport(self, host_name: str
-                                 , port_number: int) -> typing.AsyncIterator[Transport]:
+    async def _connect_transport(self, host_name: str, port_number: int
+                                 , connect_deadline: float) -> typing.AsyncIterator[Transport]:
         transport = Transport(self.get_loop(), self.get_logger())
-        await transport.connect(host_name, port_number)
+        connect_timeout = max(connect_deadline - time.monotonic(), 0.0)
+        await transport.connect(host_name, port_number, connect_timeout)
 
         try:
             yield transport
@@ -342,7 +348,8 @@ class Session:
         self._transport = transport
 
     @async_generator.asynccontextmanager
-    async def _connect(self, transport: Transport) -> typing.AsyncIterator[None]:
+    async def _do_connect(self, transport: Transport
+                          , connect_deadline: float) -> typing.AsyncIterator[None]:
         buffer = bytearray()
 
         request = protocol.ConnectRequest(
@@ -355,7 +362,8 @@ class Session:
 
         serialize_record(request, buffer)
         transport.write(buffer)
-        data = await transport.read(self._get_read_timeout())
+        connect_timeout = max(connect_deadline - time.monotonic(), 0.0)
+        data = await transport.read(connect_timeout)
         response: protocol.ConnectResponse
         response, _ = deserialize_record(protocol.ConnectResponse, data)
 
@@ -368,7 +376,7 @@ class Session:
             yield
         except Exception:
             if self._id == 0:
-                self._close(transport)
+                self._do_close(transport)
 
             raise
 
@@ -376,18 +384,20 @@ class Session:
         self._id = response.session_id
         self._password = response.passwd
 
-    def _close(self, transport: Transport) -> None:
+    def _do_close(self, transport: Transport) -> None:
         buffer = bytearray()
         request_header = protocol.RequestHeader(xid=self._get_xid()
                                                 , type=protocol.OpCode.CLOSE_SESSION)
         serialize_record(request_header, buffer)
         transport.write(buffer)
 
-    async def _authenticate(self, transport: Transport
+    async def _authenticate(self, transport: Transport, connect_deadline: float
                             , auth_infos: typing.Iterable[AuthInfo]) -> None:
         for auth_info in auth_infos:
+            connect_timeout = max(connect_deadline - time.monotonic(), 0.0)
+
             try:
-                await self._execute_operation(transport, -4, protocol.OpCode.AUTH
+                await self._execute_operation(transport, connect_timeout, -4, protocol.OpCode.AUTH
                                               , protocol.AuthPacket(
                     type=0,
                     scheme=auth_info[0],
@@ -397,7 +407,7 @@ class Session:
                 self._reset(SessionState.AUTH_FAILED, SessionEventType.AUTH_FAILED)
                 raise
 
-    async def _rewatch(self, transport: Transport) -> None:
+    async def _rewatch(self, transport: Transport, connect_deadline: float) -> None:
         requests = []
         request_size = _SETWATCHES_OVERHEAD_SIZE
         paths: typing.Tuple[typing.List[str], typing.List[str], typing.List[str]] = ([], [], [])
@@ -418,7 +428,9 @@ class Session:
                     ))
 
                     request_size = _SETWATCHES_OVERHEAD_SIZE
-                    paths = ([], [], [])
+                    paths[0].clear()
+                    paths[1].clear()
+                    paths[2].clear()
 
                 paths[watcher_type].append(path)
                 request_size += path_size
@@ -432,10 +444,12 @@ class Session:
             ))
 
         for request in requests:
-            await self._execute_operation(transport, -8, protocol.OpCode.SET_WATCHES, request)
+            connect_timeout = max(connect_deadline - time.monotonic(), 0.0)
+            await self._execute_operation(transport, connect_timeout, -8
+                                          , protocol.OpCode.SET_WATCHES, request)
 
-    async def _execute_operation(self, transport: Transport, xid: int, op_code: protocol.OpCode
-                                 , request):
+    async def _execute_operation(self, transport: Transport, read_timeout: float, xid: int
+                                 , op_code: protocol.OpCode, request):
         assert isinstance(request, protocol.get_request_class(op_code)), repr((op_code, request))
         buffer = bytearray()
         request_header = protocol.RequestHeader(xid=xid, type=op_code)
@@ -444,7 +458,7 @@ class Session:
         transport.write(buffer)
 
         while True:
-            data = await transport.read(self._get_read_timeout())
+            data = await transport.read(read_timeout)
             reply_header: protocol.ReplyHeader
             reply_header, data_offset = deserialize_record(protocol.ReplyHeader, data)
 
@@ -467,7 +481,7 @@ class Session:
             elif reply_header.xid == -2:  # -2 is the xid for pings
                 pass
             else:
-                self.get_logger().info("ignored reply: reply_header={!r}".format(reply_header))
+                self.get_logger().warn("ignored reply: reply_header={!r}".format(reply_header))
 
         response, _ = deserialize_record(protocol.get_response_class(op_code), data, data_offset)
         return response
@@ -512,12 +526,12 @@ class Session:
                 elif reply_header.xid == -2:  # -2 is the xid for pings
                     pass
                 else:
-                    self.get_logger().info("ignored reply: reply_header={!r}".format(reply_header))
+                    self.get_logger().warn("ignored reply: reply_header={!r}".format(reply_header))
             else:
                 operation = self._pending_operations2.pop(reply_header.xid, None)
 
                 if operation is None:
-                    self.get_logger().info("missing operation: reply_header={!r}"
+                    self.get_logger().warn("missing operation: reply_header={!r}"
                                            .format(reply_header))
                     continue
 
@@ -565,7 +579,7 @@ class Session:
             watchers = path_2_watchers.pop(path, None)
 
             if watchers is None:
-                self.get_logger().info("missing watcher: watcher_event_type={!r} path={!r}"
+                self.get_logger().warn("missing watcher: watcher_event_type={!r} path={!r}"
                                        .format(watcher_event_type, path))
                 continue
 

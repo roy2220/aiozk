@@ -1,10 +1,9 @@
 import asyncio
-import heapq
 import logging
 import re
-import time
 import typing
 
+from . import delay_pool
 from . import errors
 from . import protocol
 from . import session
@@ -13,54 +12,23 @@ from . import session
 ServerAddress = typing.Tuple[str, int]
 
 
-class _Server():
-    def __init__(self, address: ServerAddress) -> None:
-        self.address = address
-        self.last_address_access_time = 0.0
-        self.weight = 0.0
-
-    def up(self) -> None:
-        self.weight = 0.0
-
-    def down(self) -> None:
-        self.weight += 0.75
-
-    async def get_address(self, loop: asyncio.AbstractEventLoop
-                          , logger: logging.Logger) -> ServerAddress:
-        now = time.time()
-        wait_time = max(self.last_address_access_time + (1.5 ** self.weight - 1) - now, 0.0)
-        logger.info("server address getting: server_address={!r} wait_time={!r}"
-                    .format(self.address, wait_time))
-
-        if wait_time > 0.001:
-            await asyncio.sleep(wait_time, loop=loop)
-
-        self.last_address_access_time = now
-        return self.address
-
-    def __lt__(self, other: "_Server") -> bool:
-        return self.weight < other.weight
-
-
 class Client:
     def __init__(self, *,
         loop=asyncio.get_event_loop(),
         logger=logging.getLogger(),
-        session_timeout=4.0,
+        session_timeout=6.0,
         server_addresses: typing.Iterable[ServerAddress]=(("127.0.0.1", 2181),),
         path_prefix = "/",
         auth_infos: typing.Iterable[session.AuthInfo]=(),
         default_acl: typing.Iterable[protocol.ACL]=(protocol.Ids.OPEN_ACL_UNSAFE,),
     ) -> None:
         self._session = session.Session(loop, logger, session_timeout)
-        self._servers: typing.List[_Server] = list((_Server(server_address) for server_address \
-            in set(server_addresses)))
-        assert len(self._servers) >= 1, repr(self._servers)
+        self._server_addresses = delay_pool.DelayPool(server_addresses, session_timeout)
         assert path_prefix.startswith("/"), repr(path_prefix)
         self._path_prefix = _RE1.sub("/", path_prefix + "/")
-        self._auth_infos: typing.Set[session.AuthInfo] = set(auth_infos)
+        self._auth_infos = set(auth_infos)
         self._default_acl = tuple(default_acl)
-        assert len(self._default_acl) >= 1, repr(self._default_acl)
+        assert len(self._default_acl) >= 1
         self._task: asyncio.Future[None] = asyncio.Future(loop=self.get_loop())
         self._task.set_result(None)
 
@@ -86,7 +54,7 @@ class Client:
          return self._task if self._task.done() else asyncio.shield(self._task)
 
     def normalize_path(self, path: str) -> str:
-        assert len(path) >= 1, repr(path)
+        assert len(path) >= 1
         path = _RE1.sub("/", path + "/")
 
         if path[0] == "/":
@@ -126,7 +94,6 @@ class Client:
         )
 
     async def create(self, *args, **kwargs) -> protocol.CreateResponse:
-        assert self.is_running()
         auto_retry = kwargs.pop("auto_retry", False)
         return await self._session.execute_operation(*self.create_op(*args, **kwargs), auto_retry)
 
@@ -139,7 +106,6 @@ class Client:
         )
 
     async def delete(self, *args, **kwargs) -> None:
-        assert self.is_running()
         auto_retry = kwargs.pop("auto_retry", False)
         await self._session.execute_operation(*self.delete_op(*args, **kwargs), auto_retry)
 
@@ -153,7 +119,6 @@ class Client:
         )
 
     async def set_data(self, *args, **kwargs) -> protocol.SetDataResponse:
-        assert self.is_running()
         auto_retry = kwargs.pop("auto_retry", False)
         return await self._session.execute_operation(*self.set_data_op(*args, **kwargs), auto_retry)
 
@@ -166,14 +131,11 @@ class Client:
         )
 
     async def check(self, *args, **kwargs) -> None:
-        assert self.is_running()
         auto_retry = kwargs.pop("auto_retry", False)
         await self._session.execute_operation(*self.check_op(*args, **kwargs), auto_retry)
 
     async def multi(self, ops: typing.Iterable[protocol.Op], *
                     , auto_retry=False) -> protocol.MultiResponse:
-        assert self.is_running()
-
         return await self._session.execute_operation(
             protocol.OpCode.MULTI,
 
@@ -186,7 +148,6 @@ class Client:
 
     async def exists(self, path: str, watch: bool=False, *, auto_retry=False) -> typing.Tuple\
         [typing.Optional[protocol.ExistsResponse], typing.Optional[session.Watcher]]:
-        assert self.is_running()
         path = self.normalize_path(path)
         watcher = None
 
@@ -221,7 +182,6 @@ class Client:
 
     async def get_data(self, path: str, watch: bool=False, *, auto_retry=False) -> typing.Tuple\
         [protocol.GetDataResponse, typing.Optional[session.Watcher]]:
-        assert self.is_running()
         path = self.normalize_path(path)
         watcher = None
 
@@ -247,7 +207,6 @@ class Client:
 
     async def get_children(self, path: str, watch: bool=False, *, auto_retry=False) -> typing\
         .Tuple[protocol.GetChildrenResponse, typing.Optional[session.Watcher]]:
-        assert self.is_running()
         path = self.normalize_path(path)
         watcher = None
 
@@ -273,7 +232,6 @@ class Client:
 
     async def get_children2(self, path: str, watch: bool=False, *, auto_retry=False) -> typing\
         .Tuple[protocol.GetChildren2Response, typing.Optional[session.Watcher]]:
-        assert self.is_running()
         path = self.normalize_path(path)
         watcher = None
 
@@ -298,7 +256,6 @@ class Client:
         )
 
     async def get_acl(self, path: str, *, auto_retry=False) -> protocol.GetACLResponse:
-        assert self.is_running()
         path = self.normalize_path(path)
 
         return await self._session.execute_operation(
@@ -313,7 +270,6 @@ class Client:
 
     async def set_acl(self, path: str, acl: typing.Iterable[protocol.ACL]=(), version=-1, *
                       , auto_retry=False) -> protocol.SetACLResponse:
-        assert self.is_running()
         path = self.normalize_path(path)
 
         if acl is ():
@@ -332,7 +288,6 @@ class Client:
         )
 
     async def sync(self, path: str, *, auto_retry=False) -> protocol.SyncResponse:
-        assert self.is_running()
         path = self.normalize_path(path)
 
         return await self._session.execute_operation(
@@ -397,40 +352,44 @@ class Client:
         return self._session.get_logger()
 
     async def _run(self) -> None:
-        while True:
-            server = heapq.heappop(self._servers)
+        try:
+            while True:
+                server_address = await self._server_addresses.allocate_item(self.get_loop())
 
-            try:
-                host_name, port_number = await server.get_address(self.get_loop()
-                                                                  , self.get_logger())
-                await self._session.connect(host_name, port_number, self._auth_infos)
-                server.up()
-                await self._session.dispatch()
-                assert False
-            except (
-                ConnectionRefusedError,
-                ConnectionResetError,
-                TimeoutError,
-                asyncio.TimeoutError,
-                asyncio.IncompleteReadError,
-            ):
-                server.down()
-            except (
-                asyncio.CancelledError,
-                errors.SessionExpiredError,
-                errors.AuthFailedError
-            ):
-                break
-            except Exception:
-                self.get_logger().exception("client running failure:")
-                break
-            finally:
-                heapq.heappush(self._servers, server)
+                if server_address is None:
+                    self.get_logger().error("client connecting failure")
+                    break
+
+                self.get_logger().info("client connecting: server_address={!r}"
+                                       .format(server_address))
+                connect_deadline = self._server_addresses.when_next_item_allocable()
+
+                try:
+                    await self._session.connect(*server_address, connect_deadline, self._auth_infos)
+                    self._server_addresses.reset(self._session.get_timeout())
+                    await self._session.dispatch()
+                except (
+                    ConnectionRefusedError,
+                    ConnectionResetError,
+                    TimeoutError,
+                    asyncio.TimeoutError,
+                    asyncio.IncompleteReadError,
+                ):
+                    continue
+        except (
+            asyncio.CancelledError,
+            errors.SessionExpiredError,
+            errors.AuthFailedError
+        ):
+            pass
+        except Exception:
+            self.get_logger().exception("client running failure:")
 
         if not self._session.is_closed():
             self._session.close()
 
         self._session.remove_all_listeners()
+        self._server_addresses.reset(self._session.get_timeout())
 
 
 _RE1 = re.compile(r"//+")

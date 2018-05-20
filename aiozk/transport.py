@@ -9,10 +9,10 @@ class Transport:
         self._loop = loop
         self._logger = logger
 
-    async def connect(self, host_name: str, port_number: int) -> None:
-        self._stream_reader, self._stream_writer = await asyncio.open_connection(host_name\
-            , port_number, loop=self._loop)
-        self._is_closed = False
+    def connect(self, host_name: str, port_number: int
+                , connect_timeout: float) -> "asyncio.Future[None]":
+        assert self._is_closed
+        return asyncio.wait_for(self._connect(host_name, port_number), connect_timeout)
 
     def write(self, message: typing.Union[bytes, bytearray]) -> None:
         assert not self._is_closed
@@ -37,6 +37,11 @@ class Transport:
 
     def is_closed(self) -> bool:
         return self._is_closed
+
+    async def _connect(self, host_name: str, port_number: int) -> None:
+        self._stream_reader, self._stream_writer = await asyncio.open_connection(host_name\
+            , port_number, loop=self._loop)
+        self._is_closed = False
 
     async def _read(self) -> bytes:
         message_size = int.from_bytes(await self._stream_reader.readexactly(4), "big")
