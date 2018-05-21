@@ -320,7 +320,7 @@ class Client:
                     except errors.NodeExistsError:
                         pass
             except errors.NoNodeError:
-                continue
+                pass
             else:
                 return
 
@@ -339,7 +339,7 @@ class Client:
             try:
                 await self.delete(path, auto_retry=True)
             except errors.NotEmptyError:
-                continue
+                pass
             except errors.NoNodeError:
                 return
             else:
@@ -375,7 +375,7 @@ class Client:
                     asyncio.TimeoutError,
                     asyncio.IncompleteReadError,
                 ):
-                    continue
+                    pass
         except (
             asyncio.CancelledError,
             errors.SessionExpiredError,

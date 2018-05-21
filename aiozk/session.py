@@ -498,15 +498,14 @@ class Session:
                 request_header = protocol.RequestHeader(xid=-2, type=protocol.OpCode.PING)
                 serialize_record(request_header, buffer)
                 self._transport.write(buffer)
-                continue
-
-            buffer = bytearray()
-            xid = self._get_xid()
-            request_header = protocol.RequestHeader(xid=xid, type=operation.op_code)
-            serialize_record(request_header, buffer)
-            serialize_record(operation.request, buffer)
-            self._transport.write(buffer)
-            self._pending_operations2[xid] = operation
+            else:
+                buffer = bytearray()
+                xid = self._get_xid()
+                request_header = protocol.RequestHeader(xid=xid, type=operation.op_code)
+                serialize_record(request_header, buffer)
+                serialize_record(operation.request, buffer)
+                self._transport.write(buffer)
+                self._pending_operations2[xid] = operation
 
     async def _receive_responses(self) -> None:
         while True:
