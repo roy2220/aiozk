@@ -14,16 +14,17 @@ ServerAddress = typing.Tuple[str, int]
 
 class Client:
     def __init__(self, *,
-        loop=asyncio.get_event_loop(),
-        logger=logging.getLogger(),
-        session_timeout=6.0,
+        loop: typing.Optional[asyncio.AbstractEventLoop]=None,
+        logger: typing.Optional[logging.Logger]=None,
+        session_timeout=5.0,
         server_addresses: typing.Iterable[ServerAddress]=(("127.0.0.1", 2181),),
-        path_prefix = "/",
+        path_prefix="/",
         auth_infos: typing.Iterable[session.AuthInfo]=(),
         default_acl: typing.Iterable[protocol.ACL]=(protocol.Ids.OPEN_ACL_UNSAFE,),
     ) -> None:
         self._session = session.Session(loop, logger, session_timeout)
-        self._server_addresses = delay_pool.DelayPool(server_addresses, session_timeout)
+        self._server_addresses = delay_pool.DelayPool(server_addresses, 1.0, session_timeout
+                                                      , self.get_loop(), self.get_logger())
         assert path_prefix.startswith("/"), repr(path_prefix)
         self._path_prefix = _RE1.sub("/", path_prefix + "/")
         self._auth_infos = set(auth_infos)
@@ -352,9 +353,11 @@ class Client:
         return self._session.get_logger()
 
     async def _run(self) -> None:
+        session_timeout = self._session.get_timeout()
+
         try:
             while True:
-                server_address = await self._server_addresses.allocate_item(self.get_loop())
+                server_address = await self._server_addresses.allocate_item()
 
                 if server_address is None:
                     self.get_logger().error("client connecting failure")
@@ -366,7 +369,9 @@ class Client:
 
                 try:
                     await self._session.connect(*server_address, connect_deadline, self._auth_infos)
-                    self._server_addresses.reset(self._session.get_timeout())
+                    session_timeout = self._session.get_timeout()
+                    self._server_addresses.reset(session_timeout / (session_timeout \
+                        - self._session.get_read_timeout()), session_timeout)
                     await self._session.dispatch()
                 except (
                     ConnectionRefusedError,
@@ -389,7 +394,7 @@ class Client:
             self._session.close()
 
         self._session.remove_all_listeners()
-        self._server_addresses.reset(self._session.get_timeout())
+        self._server_addresses.reset(1.0, session_timeout)
 
 
 _RE1 = re.compile(r"//+")

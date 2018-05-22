@@ -4,7 +4,14 @@ import typing
 
 
 class Transport:
-    def __init__(self, loop: asyncio.AbstractEventLoop, logger: logging.Logger) -> None:
+    def __init__(self, loop: typing.Optional[asyncio.AbstractEventLoop]
+                 , logger: typing.Optional[logging.Logger]) -> None:
+        if loop is None:
+            loop = asyncio.get_event_loop()
+
+        if logger is None:
+            logger = logging.getLogger()
+
         self._is_closed = True
         self._loop = loop
         self._logger = logger

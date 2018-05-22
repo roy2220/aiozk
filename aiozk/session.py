@@ -225,6 +225,9 @@ class Session:
     def get_timeout(self) -> float:
         return self._timeout
 
+    def get_read_timeout(self) -> float:
+        return self._timeout * 2 / 3
+
     def is_closed(self) -> bool:
         return self._state in _FINAL_SESSION_STATES
 
@@ -509,7 +512,7 @@ class Session:
 
     async def _receive_responses(self) -> None:
         while True:
-            data = await self._transport.read(self._get_read_timeout())
+            data = await self._transport.read(self.get_read_timeout())
             reply_header: protocol.ReplyHeader
             reply_header, data_offset = deserialize_record(protocol.ReplyHeader, data)
 
@@ -564,9 +567,6 @@ class Session:
         self._next_xid = (xid + 1) & 0x7FFFFFFF
         return xid
 
-    def _get_read_timeout(self) -> float:
-        return self._timeout * 2 / 3
-
     def _get_min_ping_interval(self) -> float:
         return self._timeout / 3
 
@@ -607,7 +607,7 @@ _FINAL_SESSION_STATES = _FINAL_SESSION_STATE_2_ERROR_CLASS.keys()
 
 _PROTOCOL_VERSION = 0
 
-_MAX_SETWATCHES_SIZE = 1 << 16
+_MAX_SETWATCHES_SIZE = 1 << 17
 _SETWATCHES_OVERHEAD_SIZE = get_size(protocol.RequestHeader) + get_size(protocol.SetWatches)
 _STRING_OVERHEAD_SIZE = get_size(protocol.String)
 
