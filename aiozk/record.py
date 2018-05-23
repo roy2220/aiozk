@@ -14,14 +14,14 @@ __all__ = (
 import typing
 
 
+_T = typing.TypeVar("_T")
+
 Boolean = bool
 Int = int
 Long = typing.NewType("Long", int)
-Buffer = typing.Optional[bytes]
-String = typing.Optional[str]
-
-_T = typing.TypeVar("_T")
-Vector = typing.Optional[typing.Tuple[_T, ...]]
+Buffer = bytes
+String = str
+Vector = typing.Tuple[_T, ...]
 
 
 def serialize_record(record, buffer: bytearray) -> None:
@@ -33,7 +33,7 @@ def deserialize_record(record_class: typing.Type, data: bytes
     return _deserialize_record(record_class, data, data_offset)
 
 
-def get_size(class_: typing.Type, value=None) -> int:
+def get_size(class_: typing.Type[_T], value: typing.Optional[_T]=None) -> int:
     if class_ is Boolean:
         size = 1
     elif class_ is Int:
@@ -44,12 +44,12 @@ def get_size(class_: typing.Type, value=None) -> int:
         size = 4
 
         if value is not None:
-            size += len(value)
+            size += len(value)  # type: ignore
     elif class_ is String:
         size = 4
 
         if value is not None:
-            size += len(value.encode())
+            size += len(value.encode())  # type: ignore
     else:
         if _test_vector_class(class_):
             size = 4
@@ -57,17 +57,17 @@ def get_size(class_: typing.Type, value=None) -> int:
             if value is not None:
                 element_class = _get_element_class(class_)
 
-                for element_value in value:
+                for element_value in value:  # type: ignore
                     size += get_size(element_class, element_value)
         else:
             if class_ is type(None):
                 size = 0
             elif hasattr(class_, "get_size"):
-                size = class_.get_size(value)
+                size = class_.get_size(value)  # type: ignore
             else:
                 size = 0
 
-                for field_name, field_class in class_._field_types.items():
+                for field_name, field_class in class_._field_types.items():  # type: ignore
                     if value is None:
                         field_value = None
                     else:
@@ -108,14 +108,11 @@ def _deserialize_record(record_class: typing.Type, data: bytes
 
 
 def _serialize_vector(vector_class: typing.Type, vector: Vector, buffer: bytearray) -> None:
-    if vector is None:
-        _serialize_int(-1, buffer)
-    else:
-        _serialize_int(len(vector), buffer)
-        element_class = _get_element_class(vector_class)
+    _serialize_int(len(vector), buffer)
+    element_class = _get_element_class(vector_class)
 
-        for element_value in vector:
-            _serialize_value(element_class, element_value, buffer)
+    for element_value in vector:
+        _serialize_value(element_class, element_value, buffer)
 
 
 def _deserialize_vector(vector_class: typing.Type, data: bytes
@@ -123,17 +120,16 @@ def _deserialize_vector(vector_class: typing.Type, data: bytes
     number_of_elements, data_offset = _deserialize_int(data, data_offset)
 
     if number_of_elements < 0:
-        vector = None
-    else:
-        element_values = []
-        element_class = _get_element_class(vector_class)
+        raise ValueError("number_of_elements={!r}".format(number_of_elements))
 
-        for _ in range(number_of_elements):
-            element_value, data_offset = _deserialize_value(element_class, data, data_offset)
-            element_values.append(element_value)
+    element_values = []
+    element_class = _get_element_class(vector_class)
 
-        vector = tuple(element_values)
+    for _ in range(number_of_elements):
+        element_value, data_offset = _deserialize_value(element_class, data, data_offset)
+        element_values.append(element_value)
 
+    vector = tuple(element_values)
     return vector, data_offset
 
 
@@ -175,7 +171,7 @@ def _deserialize_boolean(data: bytes, data_offset: int) -> typing.Tuple[Boolean,
     next_data_offset = data_offset + 1
 
     if next_data_offset > len(data):
-        raise EOFError()
+        raise ValueError("next_data_offset={!r} data_size={!r}".format(next_data_offset, len(data)))
 
     boolean = bool(data[data_offset])
     data_offset = next_data_offset
@@ -190,77 +186,69 @@ def _deserialize_int(data: bytes, data_offset: int) -> typing.Tuple[Int, int]:
     next_data_offset = data_offset + 4
 
     if next_data_offset > len(data):
-        raise EOFError()
+        raise ValueError("next_data_offset={!r} data_size={!r}".format(next_data_offset, len(data)))
 
     int_ = int.from_bytes(data[data_offset:next_data_offset], "big", signed=True)
     data_offset = next_data_offset
     return int_, data_offset
 
 
-def _serialize_long(long_: Long, buffer: bytearray) -> None:
-    buffer.extend(long_.to_bytes(8, "big", signed=True))
+def _serialize_long(long: Long, buffer: bytearray) -> None:
+    buffer.extend(long.to_bytes(8, "big", signed=True))
 
 
 def _deserialize_long(data: bytes, data_offset: int) -> typing.Tuple[Long, int]:
     next_data_offset = data_offset + 8
 
     if next_data_offset > len(data):
-        raise EOFError()
+        raise ValueError("next_data_offset={!r} data_size={!r}".format(next_data_offset, len(data)))
 
     long = Long(int.from_bytes(data[data_offset:next_data_offset], "big", signed=True))
     data_offset = next_data_offset
     return long, data_offset
 
 
-def _serialize_buffer(buffer1: Buffer, buffer: bytearray) -> None:
-    if buffer1 is None:
-        _serialize_int(-1, buffer)
-    else:
-        _serialize_int(len(buffer1), buffer)
-        buffer.extend(buffer1)
+def _serialize_buffer(buffer1: Buffer, buffer2: bytearray) -> None:
+    _serialize_int(len(buffer1), buffer2)
+    buffer2.extend(buffer1)
 
 
 def _deserialize_buffer(data: bytes, data_offset: int) -> typing.Tuple[Buffer, int]:
     number_of_bytes, data_offset = _deserialize_int(data, data_offset)
 
     if number_of_bytes < 0:
-        buffer1 = None
-    else:
-        next_data_offset = data_offset + number_of_bytes
+        raise ValueError("number_of_bytes={!r}".format(number_of_bytes))
 
-        if next_data_offset > len(data):
-            raise EOFError()
+    next_data_offset = data_offset + number_of_bytes
 
-        buffer1 = data[data_offset:next_data_offset]
-        data_offset = next_data_offset
+    if next_data_offset > len(data):
+        raise ValueError("next_data_offset={!r} data_size={!r}".format(next_data_offset, len(data)))
 
-    return buffer1, data_offset
+    buffer = data[data_offset:next_data_offset]
+    data_offset = next_data_offset
+    return buffer, data_offset
 
 
 def _serialize_string(string: String, buffer: bytearray) -> None:
-    if string is None:
-        _serialize_int(-1, buffer)
-    else:
-        raw_value = string.encode()
-        _serialize_int(len(raw_value), buffer)
-        buffer.extend(raw_value)
+    raw_value = string.encode()
+    _serialize_int(len(raw_value), buffer)
+    buffer.extend(raw_value)
 
 
 def _deserialize_string(data: bytes, data_offset: int) -> typing.Tuple[String, int]:
     number_of_bytes, data_offset = _deserialize_int(data, data_offset)
 
     if number_of_bytes < 0:
-        string = None
-    else:
-        next_data_offset = data_offset + number_of_bytes
+        raise ValueError("number_of_bytes={!r}".format(number_of_bytes))
 
-        if next_data_offset > len(data):
-            raise EOFError()
+    next_data_offset = data_offset + number_of_bytes
 
-        raw_value = data[data_offset:next_data_offset]
-        string = raw_value.decode()
-        data_offset = next_data_offset
+    if next_data_offset > len(data):
+        raise ValueError("next_data_offset={!r} data_size={!r}".format(next_data_offset, len(data)))
 
+    raw_value = data[data_offset:next_data_offset]
+    string = raw_value.decode()
+    data_offset = next_data_offset
     return string, data_offset
 
 
@@ -269,7 +257,7 @@ def _test_vector_class(class_: typing.Type) -> bool:
 
 
 def _get_element_class(vector_class: typing.Type) -> typing.Type:
-    element_class = vector_class._subs_tree()[1][1]
+    element_class = vector_class._subs_tree()[1]
 
     if isinstance(element_class, tuple):
         element_class = element_class[0][element_class[1:]]

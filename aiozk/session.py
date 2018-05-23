@@ -1,15 +1,15 @@
 import asyncio
-import collections
 import enum
 import logging
 import time
 import typing
 
+from asyncio_toolkit import utils
+from asyncio_toolkit.deque import Deque
 import async_generator
 
 from . import errors
 from . import protocol
-from .deque import Deque
 from .record import *
 from .transport import Transport
 
@@ -19,49 +19,6 @@ class SessionState(enum.IntEnum):
     CONNECTED = enum.auto()
     CLOSED = enum.auto()
     AUTH_FAILED = enum.auto()
-
-
-class WatcherType(enum.IntEnum):
-    DATA, EXIST, CHILD = range(3)
-
-
-class Watcher:
-    def __init__(self, type_: WatcherType, path: str, loop: asyncio.AbstractEventLoop) -> None:
-        self._type = type_
-        self._path = path
-        self._event: asyncio.Future[protocol.WatcherEventType] = asyncio.Future(loop=loop)
-
-    def get_type(self) -> WatcherType:
-        return self._type
-
-    def get_path(self) -> str:
-        return self._path
-
-    def wait_for_event(self) -> "asyncio.Future[protocol.WatcherEventType]":
-        return self._event if self._event.done() else asyncio.shield(self._event)
-
-    def remove(self):
-        assert not self.is_removed()
-        self._event.cancel()
-
-    def is_removed(self) -> bool:
-        return self._event.done()
-
-    def __repr__(self) -> str:
-        return "<Watcher: type={!r} path={!r}>".format(self._type, self._path)
-
-
-class _Operation:
-    def __init__(self, op_code: protocol.OpCode, request, auto_retry: bool
-                 , on_completed: typing.Optional[typing.Callable[[typing.Type[errors.Error]], None]]
-                 , non_error_classes: typing.Sequence[typing.Type[errors.Error]]
-                 , loop: asyncio.AbstractEventLoop) -> None:
-        self.op_code = op_code
-        self.request = request
-        self.auto_retry = auto_retry
-        self.on_completed = on_completed
-        self.non_error_classes = non_error_classes
-        self.response: asyncio.Future = asyncio.Future(loop=loop)
 
 
 class SessionEventType(enum.IntEnum):
@@ -96,21 +53,64 @@ class SessionListener:
         return self._state_changes is not None
 
 
+class WatcherType(enum.IntEnum):
+    DATA, EXIST, CHILD = range(3)
+
+
+class Watcher:
+    def __init__(self, type_: WatcherType, path: str, loop: asyncio.AbstractEventLoop) -> None:
+        self._type = type_
+        self._path = path
+        self._event: asyncio.Future[protocol.WatcherEventType] = utils.Future(loop=loop)
+
+    def get_type(self) -> WatcherType:
+        return self._type
+
+    def get_path(self) -> str:
+        return self._path
+
+    def wait_for_event(self) -> "asyncio.Future[protocol.WatcherEventType]":
+        return self._event if self._event.done() else utils.shield(self._event)
+
+    def remove(self):
+        assert not self.is_removed()
+        self._event.cancel()
+
+    def is_removed(self) -> bool:
+        return self._event.done()
+
+    def __repr__(self) -> str:
+        return "<Watcher: type={!r} path={!r}>".format(self._type, self._path)
+
+
+OperationCompletionCallback = typing.Callable[[typing.Optional[typing.Type[errors.Error]]], None]
+
+
+class _Operation(typing.NamedTuple):
+    op_code: protocol.OpCode
+    request: typing.Any
+    auto_retry: bool
+    non_error_classes: typing.Sequence[typing.Type[errors.Error]]
+    on_completed: typing.Optional[OperationCompletionCallback]
+    response: asyncio.Future
+
+
 AuthInfo = typing.Tuple[str, bytes]
 
 
 class Session:
-    def __init__(self, loop: asyncio.AbstractEventLoop, logger: logging.Logger, timeout: float) -> None:
+    def __init__(self, loop: typing.Optional[asyncio.AbstractEventLoop]
+                 , logger: typing.Optional[logging.Logger], timeout: float) -> None:
         self._transport = Transport(loop, logger)
+        self._timeout = timeout
         self._state = SessionState.CLOSED
         self._listeners: typing.Set[SessionListener] = set()
         self._id = Long(0)
         self._password = b""
         self._last_zxid = Long(0)
-        self._timeout = timeout
         self._next_xid = 1
         self._pending_operations1: Deque[_Operation] = Deque(_MAX_NUMBER_OF_PENDING_OPERATIONS
-                                                             , loop=self.get_loop())
+                                                             , self.get_loop())
         self._pending_operations2: typing.Dict[int, _Operation] = {}
         self._watchers: typing.Tuple[typing.Dict[str, typing.Set[Watcher]]
                                      , typing.Dict[str, typing.Set[Watcher]]
@@ -124,13 +124,13 @@ class Session:
 
     def remove_listener(self, listener: SessionListener) -> None:
         assert listener.is_active()
-        listener._state_changes.put_nowait(None)
+        listener._state_changes.put_nowait(None)  # type: ignore
         listener._state_changes = None
         self._listeners.remove(listener)
 
     def remove_all_listeners(self) -> None:
         for listener in self._listeners:
-            listener._state_changes.put_nowait(None)
+            listener._state_changes.put_nowait(None)  # type: ignore
             listener._state_changes = None
 
         self._listeners.clear()
@@ -153,35 +153,17 @@ class Session:
 
     async def dispatch(self) -> None:
         assert self._state is SessionState.CONNECTED, repr(self._state)
-        loop = self.get_loop()
-
-        tasks = (
-            loop.create_task(self._send_requests()),
-            loop.create_task(self._receive_responses()),
-        )
-
-        try:
-            done_tasks, pending_tasks = await asyncio.wait(tasks, loop=loop
-                                                           , return_when=asyncio.FIRST_COMPLETED)
-        except Exception:
-            for task in tasks:
-                task.cancel()
-
-            raise
-
-        for task1 in pending_tasks:
-            task1.cancel()
-
-        for task2 in done_tasks:
-            task2.result()
+        await utils.wait_for_any((self._send_requests(), self._receive_responses())
+                                 , loop=self.get_loop())
 
     def close(self) -> None:
         assert not self.is_closed()
         self._reset(SessionState.CLOSED, SessionEventType.CLOSED)
 
     async def execute_operation(self, op_code: protocol.OpCode, request, auto_retry: bool
-                                , on_completed: typing.Optional[typing.Callable[[typing.Type[errors\
-        .Error]], None]]=None, non_error_classes: typing.Sequence[typing.Type[errors.Error]]=()):
+                                , non_error_classes: typing.Sequence[typing.Type[errors.Error]]=()
+                                , on_operation_completed: typing.Optional\
+        [OperationCompletionCallback]=None):
         assert isinstance(request, protocol.get_request_class(op_code)), repr((op_code, request))
         error_class = _FINAL_SESSION_STATE_2_ERROR_CLASS.get(self._state, None)
 
@@ -189,8 +171,15 @@ class Session:
             error_message = "request: {!r}".format(request)
             raise error_class(error_message)
 
-        operation = _Operation(op_code, request, auto_retry, on_completed, non_error_classes
-                               , self.get_loop())
+        operation = _Operation(
+            op_code=op_code,
+            request=request,
+            auto_retry=auto_retry,
+            non_error_classes=non_error_classes,
+            on_completed=on_operation_completed,
+            response=self.get_loop().create_future(),
+        )
+
         try:
             await self._pending_operations1.insert_tail(operation)
         except errors.Error as error:
@@ -228,6 +217,9 @@ class Session:
     def get_read_timeout(self) -> float:
         return self._timeout * 2 / 3
 
+    def get_id(self) -> int:
+        return self._id
+
     def is_closed(self) -> bool:
         return self._state in _FINAL_SESSION_STATES
 
@@ -235,30 +227,30 @@ class Session:
         old_state = self._state
         error_class: typing.Optional[typing.Type[errors.Error]] = None
 
-        if old_state is SessionState.CLOSED:
-            assert new_state is SessionState.CONNECTING, repr(new_state)
-        elif old_state is SessionState.CONNECTING:
-            if old_state is new_state:
+        if old_state is SessionState.CONNECTING:
+            if new_state is old_state:
                 return
 
-            if new_state is SessionState.CLOSED:
+            if new_state is SessionState.CONNECTED:
+                pass
+            elif new_state is SessionState.CLOSED:
                 if event_type is SessionEventType.SESSION_EXPIRED:
                     error_class = errors.SessionExpiredError
                 else:
                     error_class = errors.ConnectionLossError
-            elif new_state is SessionState.CONNECTED:
-                pass
             elif new_state is SessionState.AUTH_FAILED:
                 error_class = errors.AuthFailedError
             else:
                 assert False, repr(new_state)
         elif old_state is SessionState.CONNECTED:
-            if new_state is SessionState.CLOSED:
+            if new_state is SessionState.CONNECTING:
                 error_class = errors.ConnectionLossError
-            elif new_state is SessionState.CONNECTING:
+            elif new_state is SessionState.CLOSED:
                 error_class = errors.ConnectionLossError
             else:
                 assert False, repr(new_state)
+        elif old_state is SessionState.CLOSED:
+            assert new_state is SessionState.CONNECTING, repr(new_state)
         elif old_state is SessionState.AUTH_FAILED:
             assert new_state is SessionState.CONNECTING, repr(new_state)
         else:
@@ -267,6 +259,7 @@ class Session:
         if error_class is not None:
             need_retry = error_class is errors.ConnectionLossError
             error_class2 = _FINAL_SESSION_STATE_2_ERROR_CLASS.get(new_state, None)
+            operation: typing.Optional[_Operation]
 
             if error_class2 is None:
                 self._pending_operations1.commit_item_removals(len(self._pending_operations2))
@@ -330,7 +323,7 @@ class Session:
                                " session_event_type={!r}".format(self._id, self._state, event_type))
 
         for listener in self._listeners:
-            listener._state_changes.put_nowait((self._state, event_type))
+            listener._state_changes.put_nowait((self._state, event_type))  # type: ignore
 
     @async_generator.asynccontextmanager
     async def _connect_transport(self, host_name: str, port_number: int
@@ -493,22 +486,26 @@ class Session:
         loop = self.get_loop()
 
         while True:
-            try:
-                operation = await asyncio.wait_for(self._pending_operations1.remove_head(False)
-                                                   , self._get_min_ping_interval(), loop=loop)
-            except asyncio.TimeoutError:
-                buffer = bytearray()
-                request_header = protocol.RequestHeader(xid=-2, type=protocol.OpCode.PING)
-                serialize_record(request_header, buffer)
-                self._transport.write(buffer)
-            else:
-                buffer = bytearray()
-                xid = self._get_xid()
-                request_header = protocol.RequestHeader(xid=xid, type=operation.op_code)
-                serialize_record(request_header, buffer)
-                serialize_record(operation.request, buffer)
-                self._transport.write(buffer)
-                self._pending_operations2[xid] = operation
+            operation = self._pending_operations1.try_remove_head(False)
+
+            if operation is None:
+                try:
+                    operation = await utils.wait_for(self._pending_operations1.remove_head(False)
+                                                     , self._get_min_ping_interval(), loop=loop)
+                except asyncio.TimeoutError:
+                    buffer = bytearray()
+                    request_header = protocol.RequestHeader(xid=-2, type=protocol.OpCode.PING)
+                    serialize_record(request_header, buffer)
+                    self._transport.write(buffer)
+                    continue
+
+            buffer = bytearray()
+            xid = self._get_xid()
+            request_header = protocol.RequestHeader(xid=xid, type=operation.op_code)  # type: ignore
+            serialize_record(request_header, buffer)
+            serialize_record(operation.request, buffer)  # type: ignore
+            self._transport.write(buffer)
+            self._pending_operations2[xid] = operation  # type: ignore
 
     async def _receive_responses(self) -> None:
         while True:
@@ -590,10 +587,11 @@ class Session:
 
     def _reset(self, final_state: SessionState, event_type: SessionEventType) -> None:
         assert final_state in _FINAL_SESSION_STATES, repr(final_state)
+        self._set_state(final_state, event_type)
         self._id = Long(0)
         self._password = b""
         self._last_zxid = Long(0)
-        self._set_state(final_state, event_type)
+        self._pending_operations1.reset(_MAX_NUMBER_OF_PENDING_OPERATIONS)
 
 
 _MAX_NUMBER_OF_PENDING_OPERATIONS = 1 << 16

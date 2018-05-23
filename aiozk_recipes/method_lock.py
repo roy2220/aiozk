@@ -2,7 +2,7 @@ import asyncio
 import typing
 
 
-_T = typing.TypeVar("_T")
+_C = typing.TypeVar("_C", bound=typing.Callable)
 
 
 slots = (
@@ -14,7 +14,7 @@ def init(instance, loop: asyncio.AbstractEventLoop) -> None:
     instance._method_lock = asyncio.Lock(loop=loop)
 
 
-def locked_method(method: _T) -> _T:
+def locked_method(method: _C) -> _C:
     async def wrapped_method(instance, *args, **kwargs):
         await instance._method_lock.acquire()
 

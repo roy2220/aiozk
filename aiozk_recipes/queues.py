@@ -2,6 +2,8 @@ import asyncio
 import typing
 import uuid
 
+from asyncio_toolkit.typing import BytesLike, Coroutine
+
 from . import method_lock
 from .locks import Lock
 import aiozk
@@ -21,8 +23,8 @@ class _QueueBase:
 
         try:
             while True:
-                (item_names,), watcher = await self._client.get_children(self._path, True
-                                                                         , auto_retry=True)
+                (item_names,), watcher = await self._client.get_children_w(self._path
+                                                                           , auto_retry=True)
 
                 if len(item_names) >= 1:
                     if not watcher.is_removed():
@@ -38,7 +40,7 @@ class _QueueBase:
 
             async def get_item_data(item_name: str) -> bytes:
                 return (await self._client.get_data(self._path + "/" + item_name
-                                                    , auto_retry=True))[0].data
+                                                    , auto_retry=True)).data
 
             getting_item_data = asyncio.gather(*(get_item_data(item_name) for item_name \
                 in item_names2), loop=self._client.get_loop())
@@ -66,7 +68,7 @@ class _QueueBase:
         return item_data
 
     async def _enqueue(self, item_name_prefix_end: str
-                       , item_data: typing.Sequence[typing.Union[bytes, bytearray]]) -> None:
+                       , item_data: typing.Sequence[BytesLike]) -> None:
         assert "-" not in item_name_prefix_end, repr(item_name_prefix_end)
         item_name_prefix = uuid.uuid4().hex + "-" + item_name_prefix_end
 
@@ -81,15 +83,14 @@ class _QueueBase:
             else:
                 return
 
-            (children,), _ = await self._client.get_children(self._path, auto_retry=True)
+            children, = await self._client.get_children(self._path, auto_retry=True)
 
             if any(child.startswith(item_name_prefix) for child in children):
                 return
 
 
 class Queue(_QueueBase):
-    def enqueue(self, item_data: typing.Sequence[typing.Union[bytes, bytearray]]) -> typing\
-        .Awaitable[None]:
+    def enqueue(self, item_data: typing.Sequence[BytesLike]) -> Coroutine[None]:
         return self._enqueue("", item_data)
 
 
@@ -97,10 +98,9 @@ _MAX_PRIORITY_QUEUE_ITEM_PRIORITY = 999
 
 
 class PriorityQueue(_QueueBase):
-    MAX_ITEM_PRIORITY = _MAX_PRIORITY_QUEUE_ITEM_PRIORITY
+    MAX_ITEM_PRIORITY: typing.ClassVar[int] = _MAX_PRIORITY_QUEUE_ITEM_PRIORITY
 
-    def enqueue(self, item_priority: int, item_data: typing.Sequence[typing.Union\
-        [bytes, bytearray]]) -> typing.Awaitable[None]:
+    def enqueue(self, item_priority: int, item_data: typing.Sequence[BytesLike]) -> Coroutine[None]:
         assert item_priority in range(_MAX_PRIORITY_QUEUE_ITEM_PRIORITY + 1), repr(item_priority)
         return self._enqueue("%.3d." % (_MAX_PRIORITY_QUEUE_ITEM_PRIORITY - item_priority)
                              , item_data)

@@ -2,6 +2,9 @@ import asyncio
 import logging
 import typing
 
+from asyncio_toolkit import utils
+from asyncio_toolkit.typing import BytesLike
+
 
 class Transport:
     def __init__(self, loop: typing.Optional[asyncio.AbstractEventLoop]
@@ -9,19 +12,23 @@ class Transport:
         if loop is None:
             loop = asyncio.get_event_loop()
 
+        self._loop = loop
+
         if logger is None:
             logger = logging.getLogger()
 
-        self._is_closed = True
-        self._loop = loop
         self._logger = logger
+        self._is_closed = True
+        self._stream_reader: asyncio.StreamReader
+        self._stream_writer: asyncio.StreamWriter
 
     def connect(self, host_name: str, port_number: int
                 , connect_timeout: float) -> "asyncio.Future[None]":
         assert self._is_closed
-        return asyncio.wait_for(self._connect(host_name, port_number), connect_timeout)
+        return utils.wait_for(self._connect(host_name, port_number), connect_timeout
+                              , loop=self._loop)
 
-    def write(self, message: typing.Union[bytes, bytearray]) -> None:
+    def write(self, message: BytesLike) -> None:
         assert not self._is_closed
         message_size = len(message)
         self._stream_writer.write(message_size.to_bytes(4, "big"))
@@ -29,12 +36,12 @@ class Transport:
 
     def read(self, read_timeout: float) -> "asyncio.Future[bytes]":
         assert not self._is_closed
-        return asyncio.wait_for(self._read(), read_timeout)
+        return utils.wait_for(self._read(), read_timeout, loop=self._loop)
 
     def close(self) -> None:
         assert not self._is_closed
-        self._is_closed = True
         self._stream_writer.close()
+        self._is_closed = True
 
     def get_loop(self) -> asyncio.AbstractEventLoop:
         return self._loop

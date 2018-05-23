@@ -1,8 +1,9 @@
 import asyncio
 import uuid
 
+from asyncio_toolkit import utils
+
 from . import method_lock
-from . import utils
 import aiozk
 
 
@@ -22,7 +23,7 @@ class Lock:
         try:
             locker_names = None
 
-            async def block() -> None:
+            async def block1() -> None:
                 nonlocal my_locker_path
                 nonlocal locker_names
                 my_locker_name_prefix = uuid.uuid4().hex + "-"
@@ -32,8 +33,7 @@ class Lock:
                         my_locker_path, = await self._client.create(self._path + "/" \
                             + my_locker_name_prefix, ephemeral=True, sequential=True)
                     except aiozk.ConnectionLossError:
-                        (locker_names,), _ = await self._client.get_children(self._path
-                                                                             , auto_retry=True)
+                        locker_names, = await self._client.get_children(self._path, auto_retry=True)
 
                         for locker_name in locker_names:
                             if locker_name.startswith(my_locker_name_prefix):
@@ -42,12 +42,12 @@ class Lock:
                     else:
                         return
 
-            await utils.atomize_cancellation(block(), loop=self._client.get_loop())
+            await utils.atomize_cancellation(block1(), loop=self._client.get_loop())
 
             if locker_names is None:
-                (locker_names,), _ = await self._client.get_children(self._path, auto_retry=True)
+                locker_names, = await self._client.get_children(self._path, auto_retry=True)
 
-            my_locker_name = my_locker_path.rsplit("/", 1)[1]
+            my_locker_name = my_locker_path.rsplit("/", 1)[1]  # type: ignore
 
             while True:
                 locker_names2 = sorted(locker_names
@@ -57,8 +57,8 @@ class Lock:
                 if my_locker_index == 0:
                     break
 
-                result, watcher = await self._client.exists(self._path + "/" + locker_names2\
-                    [my_locker_index - 1], True, auto_retry=True)
+                result, watcher = await self._client.exists_w(self._path + "/" + locker_names2\
+                    [my_locker_index - 1], auto_retry=True)
 
                 if result is None:
                     if not watcher.is_removed():
@@ -66,22 +66,24 @@ class Lock:
                 else:
                     await watcher.wait_for_event()
 
-                (locker_names,), _ = await self._client.get_children(self._path, auto_retry=True)
+                locker_names, = await self._client.get_children(self._path, auto_retry=True)
         except Exception:
             if self._client.is_running():
-                if my_locker_path is not None:
-                    try:
-                        await utils.delay_cancellation(self._client.delete(my_locker_path\
-                            , auto_retry=True), loop=self._client.get_loop())
-                    except aiozk.NoNodeError:
-                        pass
+                async def block2() -> None:
+                    if my_locker_path is not None:
+                        try:
+                            await self._client.delete(my_locker_path, auto_retry=True)
+                        except aiozk.NoNodeError:
+                            pass
 
-                if watcher is not None and not watcher.is_removed():
-                    watcher.remove()
+                    if watcher is not None and not watcher.is_removed():
+                        watcher.remove()
+
+                await utils.delay_cancellation(block2(), loop=self._client.get_loop())
 
             raise
 
-        self._my_locker_path = my_locker_path
+        self._my_locker_path = my_locker_path  # type: ignore
 
     @method_lock.locked_method
     async def release(self) -> None:
@@ -113,7 +115,7 @@ class SharedLock(Lock):
         try:
             locker_names = None
 
-            async def block() -> None:
+            async def block1() -> None:
                 nonlocal my_locker_path
                 nonlocal locker_names
                 my_locker_name_prefix = _SHARED_LOCKER_NAME_PREFIX + uuid.uuid4().hex + "-"
@@ -123,8 +125,7 @@ class SharedLock(Lock):
                         my_locker_path, = await self._client.create(self._path + "/" \
                             + my_locker_name_prefix, ephemeral=True, sequential=True)
                     except aiozk.ConnectionLossError:
-                        (locker_names,), _ = await self._client.get_children(self._path
-                                                                             , auto_retry=True)
+                        locker_names, = await self._client.get_children(self._path, auto_retry=True)
 
                         for locker_name in locker_names:
                             if locker_name.startswith(my_locker_name_prefix):
@@ -133,12 +134,12 @@ class SharedLock(Lock):
                     else:
                         return
 
-            await utils.atomize_cancellation(block(), loop=self._client.get_loop())
+            await utils.atomize_cancellation(block1(), loop=self._client.get_loop())
 
             if locker_names is None:
-                (locker_names,), _ = await self._client.get_children(self._path, auto_retry=True)
+                locker_names, = await self._client.get_children(self._path, auto_retry=True)
 
-            my_locker_name = my_locker_path.rsplit("/", 1)[1]
+            my_locker_name = my_locker_path.rsplit("/", 1)[1]  # type: ignore
 
             while True:
                 locker_names2 = (locker_name for locker_name in locker_names
@@ -151,8 +152,8 @@ class SharedLock(Lock):
                 if my_locker_index == 0:
                     break
 
-                result, watcher = await self._client.exists(self._path + "/" + locker_names3\
-                    [my_locker_index - 1], True, auto_retry=True)
+                result, watcher = await self._client.exists_w(self._path + "/" + locker_names3\
+                    [my_locker_index - 1], auto_retry=True)
 
                 if result is None:
                     if not watcher.is_removed():
@@ -160,22 +161,24 @@ class SharedLock(Lock):
                 else:
                     await watcher.wait_for_event()
 
-                (locker_names,), _ = await self._client.get_children(self._path, auto_retry=True)
+                locker_names, = await self._client.get_children(self._path, auto_retry=True)
         except Exception:
             if self._client.is_running():
-                if my_locker_path is not None:
-                    try:
-                        await utils.delay_cancellation(self._client.delete(my_locker_path\
-                            , auto_retry=True), loop=self._client.get_loop())
-                    except aiozk.NoNodeError:
-                        pass
+                async def block2() -> None:
+                    if my_locker_path is not None:
+                        try:
+                            await self._client.delete(my_locker_path, auto_retry=True)
+                        except aiozk.NoNodeError:
+                            pass
 
-                if watcher is not None and not watcher.is_removed():
-                    watcher.remove()
+                    if watcher is not None and not watcher.is_removed():
+                        watcher.remove()
+
+                await utils.delay_cancellation(block2(), loop=self._client.get_loop())
 
             raise
 
-        self._my_locker_path = my_locker_path
+        self._my_locker_path = my_locker_path  # type: ignore
 
 
 _SHARED_LOCKER_NAME_PREFIX = "shared-"

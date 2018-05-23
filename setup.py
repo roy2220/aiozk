@@ -5,22 +5,37 @@ import typing
 
 def get_version() -> str:
     with open("aiozk/__init__.py", "r") as f:
-        return re.search(r"__version__\s*=\s*\"(\d+\.\d+\.\d+)\"", f.read())[1]
+        matches = re.search(r"__version__\s*=\s*\"(\d+\.\d+\.\d+)\"", f.read())
+        assert matches is not None
+        return matches[1]
 
 
-def get_install_requires() -> typing.List[str]:
-    install_requires: typing.List[str] = []
+def parse_requirements() -> typing.Dict[str, typing.Any]:
+    install_requires = []
+    dependency_links = []
 
     with open("requirements.txt", "r") as f:
         for line in f.readlines():
             line = line.strip()
 
-            if line.startswith("#"):
+            if line == "" or line.startswith("#"):
                 continue
 
-            install_requires.append(line)
+            if line.startswith("git+"):
+                matches = re.match(r".*/([^/]+).git@v(\d+\.\d+\.\d+)$", line)
+                assert matches is not None
+                install_require = "{}=={}".format(matches[1], matches[2])
+                install_requires.append(install_require)
+                dependency_link = "{}#egg={}-{}".format(matches[0], matches[1], matches[2])
+                dependency_links.append(dependency_link)
+            else:
+                install_require = line
+                install_requires.append(install_require)
 
-    return install_requires
+    return {
+        "install_requires": install_requires,
+        "dependency_links": dependency_links,
+    }
 
 
 setup(
@@ -29,5 +44,5 @@ setup(
     description="AsyncIO client for ZooKeeper",
     packages=["aiozk", "aiozk_recipes"],
     python_requires=">=3.6.0",
-    install_requires=get_install_requires(),
+    **parse_requirements(),
 )

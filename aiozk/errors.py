@@ -2,20 +2,21 @@ import typing
 
 
 class Error(Exception):
-    CODE = 0
+    CODE: typing.ClassVar[int] = 0
 
 
 _ERROR_CODE_2_ERROR_CLASS: typing.Dict[int, typing.Type[Error]] = {}
 
 
 def _register_error(error_code: int) -> typing.Callable[[typing.Type[Error]], typing.Type[Error]]:
-    def do_register_error(error_class: typing.Type[Error]) -> typing.Type[Error]:
+    def do(error_class: typing.Type[Error]) -> typing.Type[Error]:
         assert issubclass(error_class, Error), repr(error_class)
+        assert error_class not in _ERROR_CODE_2_ERROR_CLASS.keys(), repr(error_class)
         error_class.CODE = error_code
         _ERROR_CODE_2_ERROR_CLASS[error_code] = error_class
         return error_class
 
-    return do_register_error
+    return do
 
 
 @_register_error(-1)

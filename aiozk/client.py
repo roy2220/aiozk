@@ -3,7 +3,10 @@ import logging
 import re
 import typing
 
-from . import delay_pool
+from asyncio_toolkit import utils
+from asyncio_toolkit.delay_pool import DelayPool
+from asyncio_toolkit.typing import BytesLike
+
 from . import errors
 from . import protocol
 from . import session
@@ -23,15 +26,17 @@ class Client:
         default_acl: typing.Iterable[protocol.ACL]=(protocol.Ids.OPEN_ACL_UNSAFE,),
     ) -> None:
         self._session = session.Session(loop, logger, session_timeout)
-        self._server_addresses = delay_pool.DelayPool(server_addresses, 1.0, session_timeout
-                                                      , self.get_loop(), self.get_logger())
+        self._server_addresses = DelayPool(server_addresses, 1.0, session_timeout
+                                           , self.get_loop(), self.get_logger())
         assert path_prefix.startswith("/"), repr(path_prefix)
         self._path_prefix = _RE1.sub("/", path_prefix + "/")
         self._auth_infos = set(auth_infos)
         self._default_acl = tuple(default_acl)
         assert len(self._default_acl) >= 1
-        self._task: asyncio.Future[None] = asyncio.Future(loop=self.get_loop())
-        self._task.set_result(None)
+        done_future: asyncio.Future[None] = utils.make_done_future(self.get_loop())
+        self._starting: asyncio.Future[None] = done_future
+        self._running: asyncio.Future[None] = done_future
+        self._is_stopping = False
 
     def add_session_listener(self) -> session.SessionListener:
         return self._session.add_listener()
@@ -41,18 +46,36 @@ class Client:
 
     async def start(self) -> None:
         assert not self.is_running()
-        task = self.get_loop().create_task(self._run())
+
+        if not self._starting.done():
+            await utils.shield(self._starting)
+            return
+
+        running = self.get_loop().create_task(self._run())
+        self._starting = utils.Future(loop=self.get_loop())
         session_listener = self._session.add_listener()
-        await session_listener.get_state_change()
-        self._session.remove_listener(session_listener)
-        self._task = task
+
+        try:
+            await utils.delay_cancellation(session_listener.get_state_change())
+        except Exception:
+            running.cancel()
+            await utils.delay_cancellation(running)
+            raise
+        finally:
+            if not running.done():
+                self._session.remove_listener(session_listener)
+
+            self._starting.set_result(None)
+            self._running = running
 
     def stop(self) -> None:
         assert self.is_running()
-        self._task.cancel()
 
-    def wait_for_stopped(self) -> "asyncio.Future[None]":
-         return self._task if self._task.done() else asyncio.shield(self._task)
+        if self._is_stopping:
+            return
+
+        self._running.cancel()
+        self._is_stopping = True
 
     def normalize_path(self, path: str) -> str:
         assert len(path) >= 1
@@ -66,10 +89,7 @@ class Client:
 
         return path
 
-    def is_running(self) -> bool:
-        return not self._task.done()
-
-    def create_op(self, path: str, data: typing.Union[bytes, bytearray]=b"", acl: typing.Iterable\
+    def create_op(self, path: str, data: BytesLike=b"", acl: typing.Iterable\
         [protocol.ACL]=(), ephemeral=False, sequential=False) -> protocol.Op:
         path = self.normalize_path(path)
 
@@ -147,114 +167,179 @@ class Client:
             auto_retry,
         )
 
-    async def exists(self, path: str, watch: bool=False, *, auto_retry=False) -> typing.Tuple\
-        [typing.Optional[protocol.ExistsResponse], typing.Optional[session.Watcher]]:
+    async def exists(self, path: str, *
+                     , auto_retry=False) -> typing.Optional[protocol.ExistsResponse]:
         path = self.normalize_path(path)
-        watcher = None
-
-        if watch:
-            def on_completed(non_error_class: typing.Optional[typing.Type[errors.Error]]) -> None:
-                nonlocal watcher
-
-                if non_error_class is None:
-                    watcher_type = session.WatcherType.DATA
-                elif non_error_class is errors.NoNodeError:
-                    watcher_type = session.WatcherType.EXIST
-                else:
-                    assert False, repr(non_error_class)
-
-                watcher = session.Watcher(watcher_type, path, self.get_loop())
-                self._session.add_watcher(watcher)
-        else:
-            on_completed = None
 
         return await self._session.execute_operation(
             protocol.OpCode.EXISTS,
 
             protocol.ExistsRequest(
                 path=path,
-                watch=watch,
+                watch=False,
             ),
 
             auto_retry,
-            on_completed,
             (errors.NoNodeError,),
-        ), watcher
+        )
 
-    async def get_data(self, path: str, watch: bool=False, *, auto_retry=False) -> typing.Tuple\
-        [protocol.GetDataResponse, typing.Optional[session.Watcher]]:
+    async def exists_w(self, path: str, *, auto_retry=False) -> typing.Tuple[typing\
+        .Optional[protocol.ExistsResponse], session.Watcher]:
         path = self.normalize_path(path)
         watcher = None
 
-        if watch:
-            def on_completed(non_error_class: typing.Optional[typing.Type[errors.Error]]) -> None:
-                nonlocal watcher
-                watcher = session.Watcher(session.WatcherType.DATA, path, self.get_loop())
-                self._session.add_watcher(watcher)
-        else:
-            on_completed = None
+        def on_operation_completed(non_error_class: typing.Optional[typing.Type[errors\
+            .Error]]) -> None:
+            nonlocal watcher
+
+            if non_error_class is None:
+                watcher_type = session.WatcherType.DATA
+            elif non_error_class is errors.NoNodeError:
+                watcher_type = session.WatcherType.EXIST
+            else:
+                assert False, repr(non_error_class)
+
+            watcher = session.Watcher(watcher_type, path, self.get_loop())
+            self._session.add_watcher(watcher)
+
+        result = await self._session.execute_operation(
+            protocol.OpCode.EXISTS,
+
+            protocol.ExistsRequest(
+                path=path,
+                watch=True,
+            ),
+
+            auto_retry,
+            (errors.NoNodeError,),
+            on_operation_completed,
+        )
+
+        assert watcher is not None
+        return result, watcher
+
+    async def get_data(self, path: str, *, auto_retry=False) -> protocol.GetDataResponse:
+        path = self.normalize_path(path)
 
         return await self._session.execute_operation(
             protocol.OpCode.GET_DATA,
 
             protocol.GetDataRequest(
                 path=path,
-                watch=watch,
+                watch=False,
             ),
 
             auto_retry,
-            on_completed,
-        ), watcher
+        )
 
-    async def get_children(self, path: str, watch: bool=False, *, auto_retry=False) -> typing\
-        .Tuple[protocol.GetChildrenResponse, typing.Optional[session.Watcher]]:
+    async def get_data_w(self, path: str, *, auto_retry=False) -> typing.Tuple[protocol\
+        .GetDataResponse, session.Watcher]:
         path = self.normalize_path(path)
         watcher = None
 
-        if watch:
-            def on_completed(non_error_class: typing.Optional[typing.Type[errors.Error]]) -> None:
-                nonlocal watcher
-                watcher = session.Watcher(session.WatcherType.CHILD, path, self.get_loop())
-                self._session.add_watcher(watcher)
-        else:
-            on_completed = None
+        def on_operation_completed(non_error_class: typing.Optional[typing.Type[errors\
+            .Error]]) -> None:
+            nonlocal watcher
+            watcher = session.Watcher(session.WatcherType.DATA, path, self.get_loop())
+            self._session.add_watcher(watcher)
+
+        result = await self._session.execute_operation(
+            protocol.OpCode.GET_DATA,
+
+            protocol.GetDataRequest(
+                path=path,
+                watch=True,
+            ),
+
+            auto_retry,
+            (),
+            on_operation_completed,
+        )
+
+        assert watcher is not None
+        return result, watcher
+
+    async def get_children(self, path: str, *, auto_retry=False) -> protocol.GetChildrenResponse:
+        path = self.normalize_path(path)
 
         return await self._session.execute_operation(
             protocol.OpCode.GET_CHILDREN,
 
             protocol.GetChildrenRequest(
                 path=path,
-                watch=watch,
+                watch=False,
             ),
 
             auto_retry,
-            on_completed,
-        ), watcher
+        )
 
-    async def get_children2(self, path: str, watch: bool=False, *, auto_retry=False) -> typing\
-        .Tuple[protocol.GetChildren2Response, typing.Optional[session.Watcher]]:
+    async def get_children_w(self, path: str, *, auto_retry=False) -> typing.Tuple[protocol\
+        .GetChildrenResponse, session.Watcher]:
         path = self.normalize_path(path)
         watcher = None
 
-        if watch:
-            def on_completed(non_error_class: typing.Optional[typing.Type[errors.Error]]) -> None:
-                nonlocal watcher
-                watcher = session.Watcher(session.WatcherType.CHILD, path, self.get_loop())
-                self._session.add_watcher(watcher)
-        else:
-            on_completed = None
+        def on_operation_completed(non_error_class: typing.Optional[typing.Type[errors\
+            .Error]]) -> None:
+            nonlocal watcher
+            watcher = session.Watcher(session.WatcherType.CHILD, path, self.get_loop())
+            self._session.add_watcher(watcher)
+
+        result = await self._session.execute_operation(
+            protocol.OpCode.GET_CHILDREN,
+
+            protocol.GetChildrenRequest(
+                path=path,
+                watch=True,
+            ),
+
+            auto_retry,
+            (),
+            on_operation_completed,
+        )
+
+        assert watcher is not None
+        return result, watcher
+
+    async def get_children2(self, path: str, *, auto_retry=False) -> protocol.GetChildren2Response:
+        path = self.normalize_path(path)
 
         return await self._session.execute_operation(
             protocol.OpCode.GET_CHILDREN2,
 
             protocol.GetChildrenRequest(
                 path=path,
-                watch=watch,
+                watch=False,
             ),
 
             auto_retry,
-            on_completed,
         )
+
+    async def get_children2_w(self, path: str, *, auto_retry=False) -> typing.Tuple[protocol\
+        .GetChildren2Response, session.Watcher]:
+        path = self.normalize_path(path)
+        watcher = None
+
+        def on_operation_completed(non_error_class: typing.Optional[typing.Type[errors\
+            .Error]]) -> None:
+            nonlocal watcher
+            watcher = session.Watcher(session.WatcherType.CHILD, path, self.get_loop())
+            self._session.add_watcher(watcher)
+
+        result = await self._session.execute_operation(
+            protocol.OpCode.GET_CHILDREN2,
+
+            protocol.GetChildrenRequest(
+                path=path,
+                watch=True,
+            ),
+
+            auto_retry,
+            (),
+            on_operation_completed,
+        )
+
+        assert watcher is not None
+        return result, watcher
 
     async def get_acl(self, path: str, *, auto_retry=False) -> protocol.GetACLResponse:
         path = self.normalize_path(path)
@@ -330,7 +415,7 @@ class Client:
 
         while True:
             try:
-                (children,), _ = await self.get_children(path, auto_retry=True)
+                children, = await self.get_children(path, auto_retry=True)
             except errors.NoNodeError:
                 return
 
@@ -346,11 +431,20 @@ class Client:
             else:
                 return
 
+    def wait_for_stopped(self) -> "asyncio.Future[None]":
+         return self._running if self._running.done() else utils.shield(self._running)
+
     def get_loop(self) -> asyncio.AbstractEventLoop:
         return self._session.get_loop()
 
     def get_logger(self) -> logging.Logger:
         return self._session.get_logger()
+
+    def is_running(self) -> bool:
+        return not self._running.done()
+
+    def is_stopping(self) -> bool:
+        return not self._is_stopping
 
     async def _run(self) -> None:
         session_timeout = self._session.get_timeout()
@@ -360,11 +454,12 @@ class Client:
                 server_address = await self._server_addresses.allocate_item()
 
                 if server_address is None:
-                    self.get_logger().error("client connecting failure")
+                    self.get_logger().error("client connection failure: session_id={:#x}"
+                                            .format(self._session.get_id()))
                     break
 
-                self.get_logger().info("client connecting: server_address={!r}"
-                                       .format(server_address))
+                self.get_logger().info("client connection: session_id={:#x} server_address={!r}"
+                                       .format(self._session.get_id(), server_address))
                 connect_deadline = self._server_addresses.when_next_item_allocable()
 
                 try:
@@ -388,13 +483,23 @@ class Client:
         ):
             pass
         except Exception:
-            self.get_logger().exception("client running failure:")
+            self.get_logger().exception("client run failure: session_id={:#x}"
+                                        .format(self._session.get_id()))
+
+        if self._is_stopping:
+            self.get_logger().info("client stop (passive): session_id={:#x}"
+                                    .format(self._session.get_id()))
+        else:
+            self.get_logger().info("client stop (active): session_id={:#x}"
+                                   .format(self._session.get_id()))
+            self._is_stopping = True
 
         if not self._session.is_closed():
             self._session.close()
 
         self._session.remove_all_listeners()
         self._server_addresses.reset(1.0, session_timeout)
+        self._is_stopping = False
 
 
 _RE1 = re.compile(r"//+")

@@ -9,7 +9,7 @@ AsyncIO client for ZooKeeper
 ## Installation
 
 ```shell
-python3 -m pip install -U git+git://github.com/roy2220/aiozk.git
+python3 -m pip install -U --process-dependency-links git+git://github.com/roy2220/aiozk.git
 ```
 
 ## Usage examples
@@ -30,8 +30,9 @@ python3 -m pip install -U git+git://github.com/roy2220/aiozk.git
               session_state, session_event_type = state_change
               print(session_state, session_event_type)
       finally:
-          client.stop()
-          await client.wait_for_stopped()
+          if client.is_running():
+              client.stop()
+              await client.wait_for_stopped()
 
   loop = asyncio.get_event_loop()
   loop.run_until_complete(listen_session())
@@ -51,8 +52,9 @@ python3 -m pip install -U git+git://github.com/roy2220/aiozk.git
           result = await client.create(path="/foo", data=b"bar")
           print(result)
       finally:
-          client.stop()
-          await client.wait_for_stopped()
+          if client.is_running():
+              client.stop()
+              await client.wait_for_stopped()
 
   loop = asyncio.get_event_loop()
   loop.run_until_complete(create_node())
@@ -71,8 +73,9 @@ python3 -m pip install -U git+git://github.com/roy2220/aiozk.git
       try:
           await client.delete(path="/foo")
       finally:
-          client.stop()
-          await client.wait_for_stopped()
+          if client.is_running():
+              client.stop()
+              await client.wait_for_stopped()
 
   loop = asyncio.get_event_loop()
   loop.run_until_complete(delete_node())
@@ -89,13 +92,14 @@ python3 -m pip install -U git+git://github.com/roy2220/aiozk.git
       client = aiozk.Client(server_addresses=[("192.168.33.1", 2181)], loop=loop)
       await client.start()
       try:
-          result, watcher = await client.exists(path="/foo", watch=True)
+          result, watcher = await client.exists_w(path="/foo")
           print(result)
           watcher_event_type = await watcher.wait_for_event()
           print(watcher_event_type)
       finally:
-          client.stop()
-          await client.wait_for_stopped()
+          if client.is_running():
+              client.stop()
+              await client.wait_for_stopped()
 
   loop = asyncio.get_event_loop()
   loop.run_until_complete(node_exists())
@@ -115,8 +119,9 @@ python3 -m pip install -U git+git://github.com/roy2220/aiozk.git
           result = await client.set_data(path="/foo", data=b"bar")
           print(result)
       finally:
-          client.stop()
-          await client.wait_for_stopped()
+          if client.is_running():
+              client.stop()
+              await client.wait_for_stopped()
 
   loop = asyncio.get_event_loop()
   loop.run_until_complete(set_node_data())
@@ -133,13 +138,14 @@ python3 -m pip install -U git+git://github.com/roy2220/aiozk.git
       client = aiozk.Client(server_addresses=[("192.168.33.1", 2181)], loop=loop)
       await client.start()
       try:
-          result, watcher = await client.get_data(path="/foo", watch=True)
+          result, watcher = await client.get_data_w(path="/foo")
           print(result)
           watcher_event_type = await watcher.wait_for_event()
           print(watcher_event_type)
       finally:
-          client.stop()
-          await client.wait_for_stopped()
+          if client.is_running():
+              client.stop()
+              await client.wait_for_stopped()
 
   loop = asyncio.get_event_loop()
   loop.run_until_complete(get_node_data())
@@ -156,13 +162,14 @@ python3 -m pip install -U git+git://github.com/roy2220/aiozk.git
       client = aiozk.Client(server_addresses=[("192.168.33.1", 2181)], loop=loop)
       await client.start()
       try:
-          result, watcher = await client.get_children(path="/foo", watch=True)
+          result, watcher = await client.get_children_w(path="/foo")
           print(result)
           watcher_event_type = await watcher.wait_for_event()
           print(watcher_event_type)
       finally:
-          client.stop()
-          await client.wait_for_stopped()
+          if client.is_running():
+              client.stop()
+              await client.wait_for_stopped()
 
   loop = asyncio.get_event_loop()
   loop.run_until_complete(get_node_children())

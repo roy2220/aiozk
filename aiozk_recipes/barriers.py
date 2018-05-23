@@ -1,8 +1,9 @@
 import asyncio
 import uuid
 
+from asyncio_toolkit import utils
+
 from . import method_lock
-from . import utils
 import aiozk
 
 
@@ -22,7 +23,7 @@ class Barrier:
 
         try:
             while True:
-                (data, _), watcher = await self._client.get_data(self._path, True, auto_retry=True)
+                (data, _), watcher = await self._client.get_data_w(self._path, auto_retry=True)
 
                 if len(data) >= 1:
                     if not watcher.is_removed():
@@ -40,11 +41,11 @@ class Barrier:
 
 
 class DoubleBarrier:
-    def __init__(self, client: aiozk.Client, path: str, length: int) -> None:
+    def __init__(self, client: aiozk.Client, path: str, size: int) -> None:
         method_lock.init(self, client.get_loop())
         self._client = client
         self._path = client.normalize_path(path)
-        self._length = length
+        self._size = size
         self._ready_signal_path = self._path + "/ready"
         self._my_waiter_path = ""
 
@@ -56,8 +57,8 @@ class DoubleBarrier:
 
         try:
             while True:
-                result, watcher = await self._client.exists(self._ready_signal_path, True
-                                                            , auto_retry=True)
+                result, watcher = await self._client.exists_w(self._ready_signal_path
+                                                              , auto_retry=True)
 
                 if my_waiter_path is None:
                     my_waiter_path = self._path + "/" + uuid.uuid4().hex
@@ -73,9 +74,9 @@ class DoubleBarrier:
 
                     break
 
-                (children,), _ = await self._client.get_children(self._path, auto_retry=True)
+                children, = await self._client.get_children(self._path, auto_retry=True)
 
-                if len(children) >= self._length:
+                if len(children) >= self._size:
                     try:
                         await self._client.create(self._ready_signal_path, auto_retry=True)
                     except aiozk.NodeExistsError:
@@ -89,15 +90,17 @@ class DoubleBarrier:
                 await watcher.wait_for_event()
         except Exception:
             if self._client.is_running():
-                if my_waiter_path is not None:
-                    try:
-                        await utils.delay_cancellation(self._client.delete(my_waiter_path\
-                            , auto_retry=True), loop=self._client.get_loop())
-                    except aiozk.NoNodeError:
-                        pass
+                async def block() -> None:
+                    if my_waiter_path is not None:
+                        try:
+                            await self._client.delete(my_waiter_path, auto_retry=True)
+                        except aiozk.NoNodeError:
+                            pass
 
-                if watcher is not None and not watcher.is_removed():
-                    watcher.remove()
+                    if watcher is not None and not watcher.is_removed():
+                        watcher.remove()
+
+                await utils.delay_cancellation(block(), loop=self._client.get_loop())
 
             raise
 
@@ -116,7 +119,7 @@ class DoubleBarrier:
             my_waiter_index = 0
 
             while True:
-                (children,), _ = await self._client.get_children(self._path, auto_retry=True)
+                children, = await self._client.get_children(self._path, auto_retry=True)
                 waiter_names = sorted(child for child in children if child != ready_signal_name)
                 is_left = len(waiter_names) == len(children)
 
@@ -137,8 +140,8 @@ class DoubleBarrier:
                     my_waiter_index = waiter_names.index(my_waiter_name)
 
                     if my_waiter_index == 0:
-                        result, watcher = await self._client.exists(self._path + "/" \
-                            + waiter_names[-1], True, auto_retry=True)
+                        result, watcher = await self._client.exists_w(self._path + "/" \
+                            + waiter_names[-1], auto_retry=True)
                     else:
                         try:
                             await self._client.delete(my_waiter_path, auto_retry=True)
@@ -148,13 +151,13 @@ class DoubleBarrier:
                         my_waiter_index = -1
 
                 if my_waiter_index < 0:
-                    result, watcher = await self._client.exists(self._path + "/" + waiter_names[0]
-                                                                , True, auto_retry=True)
+                    result, watcher = await self._client.exists_w(self._path + "/" + waiter_names[0]
+                                                                  , auto_retry=True)
 
                 if result is None:
-                    watcher.remove()
+                    watcher.remove()  # type: ignore
                 else:
-                    await watcher.wait_for_event()
+                    await watcher.wait_for_event()  # type: ignore
 
             if not is_left:
                 try:
@@ -163,13 +166,15 @@ class DoubleBarrier:
                     pass
         except Exception:
             if self._client.is_running():
-                try:
-                    await utils.delay_cancellation(self._client.delete(my_waiter_path\
-                        , auto_retry=True), loop=self._client.get_loop())
-                except aiozk.NoNodeError:
-                    pass
+                async def block() -> None:
+                    try:
+                        await self._client.delete(my_waiter_path, auto_retry=True)
+                    except aiozk.NoNodeError:
+                        pass
 
-                if watcher is not None and not watcher.is_removed():
-                    watcher.remove()
+                    if watcher is not None and not watcher.is_removed():
+                        watcher.remove()
+
+                await utils.delay_cancellation(block(), loop=self._client.get_loop())
 
             raise
