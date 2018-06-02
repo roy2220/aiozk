@@ -188,7 +188,7 @@ class Client:
         path = self.normalize_path(path)
         watcher = None
 
-        def on_operation_completed(non_error_class: typing.Optional[typing.Type[errors\
+        def on_operation_complete(non_error_class: typing.Optional[typing.Type[errors\
             .Error]]) -> None:
             nonlocal watcher
 
@@ -212,7 +212,7 @@ class Client:
 
             auto_retry,
             (errors.NoNodeError,),
-            on_operation_completed,
+            on_operation_complete,
         )
 
         assert watcher is not None
@@ -237,7 +237,7 @@ class Client:
         path = self.normalize_path(path)
         watcher = None
 
-        def on_operation_completed(non_error_class: typing.Optional[typing.Type[errors\
+        def on_operation_complete(non_error_class: typing.Optional[typing.Type[errors\
             .Error]]) -> None:
             nonlocal watcher
             watcher = session.Watcher(session.WatcherType.DATA, path, self.get_loop())
@@ -253,7 +253,7 @@ class Client:
 
             auto_retry,
             (),
-            on_operation_completed,
+            on_operation_complete,
         )
 
         assert watcher is not None
@@ -278,7 +278,7 @@ class Client:
         path = self.normalize_path(path)
         watcher = None
 
-        def on_operation_completed(non_error_class: typing.Optional[typing.Type[errors\
+        def on_operation_complete(non_error_class: typing.Optional[typing.Type[errors\
             .Error]]) -> None:
             nonlocal watcher
             watcher = session.Watcher(session.WatcherType.CHILD, path, self.get_loop())
@@ -294,7 +294,7 @@ class Client:
 
             auto_retry,
             (),
-            on_operation_completed,
+            on_operation_complete,
         )
 
         assert watcher is not None
@@ -319,7 +319,7 @@ class Client:
         path = self.normalize_path(path)
         watcher = None
 
-        def on_operation_completed(non_error_class: typing.Optional[typing.Type[errors\
+        def on_operation_complete(non_error_class: typing.Optional[typing.Type[errors\
             .Error]]) -> None:
             nonlocal watcher
             watcher = session.Watcher(session.WatcherType.CHILD, path, self.get_loop())
@@ -335,7 +335,7 @@ class Client:
 
             auto_retry,
             (),
-            on_operation_completed,
+            on_operation_complete,
         )
 
         assert watcher is not None

@@ -91,7 +91,7 @@ class _Operation(typing.NamedTuple):
     request: typing.Any
     auto_retry: bool
     non_error_classes: typing.Sequence[typing.Type[errors.Error]]
-    on_completed: typing.Optional[OperationCompletionCallback]
+    on_complete: typing.Optional[OperationCompletionCallback]
     response: asyncio.Future
 
 
@@ -162,7 +162,7 @@ class Session:
 
     async def execute_operation(self, op_code: protocol.OpCode, request, auto_retry: bool
                                 , non_error_classes: typing.Sequence[typing.Type[errors.Error]]=()
-                                , on_operation_completed: typing.Optional\
+                                , on_operation_complete: typing.Optional\
         [OperationCompletionCallback]=None):
         assert isinstance(request, protocol.get_request_class(op_code)), repr((op_code, request))
         error_class = _FINAL_SESSION_STATE_2_ERROR_CLASS.get(self._state, None)
@@ -176,7 +176,7 @@ class Session:
             request=request,
             auto_retry=auto_retry,
             non_error_classes=non_error_classes,
-            on_completed=on_operation_completed,
+            on_complete=on_operation_complete,
             response=self.get_loop().create_future(),
         )
 
@@ -554,8 +554,8 @@ class Session:
                     non_error_class = error_class
                     response = None
 
-                if operation.on_completed is not None:
-                    operation.on_completed(non_error_class)
+                if operation.on_complete is not None:
+                    operation.on_complete(non_error_class)
 
                 operation.response.set_result(response)
 
