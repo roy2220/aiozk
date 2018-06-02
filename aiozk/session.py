@@ -490,8 +490,8 @@ class Session:
 
             if operation is None:
                 try:
-                    operation = await utils.wait_for(self._pending_operations1.remove_head(False)
-                                                     , self._get_min_ping_interval(), loop=loop)
+                    operation = await utils.wait_for2(self._pending_operations1.remove_head(False)
+                                                      , self._get_min_ping_interval(), loop=loop)
                 except asyncio.TimeoutError:
                     buffer = bytearray()
                     request_header = protocol.RequestHeader(xid=-2, type=protocol.OpCode.PING)

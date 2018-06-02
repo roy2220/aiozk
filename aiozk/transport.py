@@ -3,7 +3,7 @@ import logging
 import typing
 
 from asyncio_toolkit import utils
-from asyncio_toolkit.typing import BytesLike
+from asyncio_toolkit.typing import BytesLike, Coroutine
 
 
 class Transport:
@@ -22,11 +22,10 @@ class Transport:
         self._stream_reader: asyncio.StreamReader
         self._stream_writer: asyncio.StreamWriter
 
-    def connect(self, host_name: str, port_number: int
-                , connect_timeout: float) -> "asyncio.Future[None]":
+    def connect(self, host_name: str, port_number: int, connect_timeout: float) -> Coroutine[None]:
         assert self._is_closed
-        return utils.wait_for(self._connect(host_name, port_number), connect_timeout
-                              , loop=self._loop)
+        return utils.wait_for1(self._connect(host_name, port_number), connect_timeout
+                               , loop=self._loop)
 
     def write(self, message: BytesLike) -> None:
         assert not self._is_closed
@@ -34,9 +33,9 @@ class Transport:
         self._stream_writer.write(message_size.to_bytes(4, "big"))
         self._stream_writer.write(message)
 
-    def read(self, read_timeout: float) -> "asyncio.Future[bytes]":
+    def read(self, read_timeout: float) -> Coroutine[bytes]:
         assert not self._is_closed
-        return utils.wait_for(self._read(), read_timeout, loop=self._loop)
+        return utils.wait_for1(self._read(), read_timeout, loop=self._loop)
 
     def close(self) -> None:
         assert not self._is_closed
