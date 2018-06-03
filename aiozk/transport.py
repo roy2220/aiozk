@@ -7,17 +7,18 @@ from asyncio_toolkit.typing import BytesLike, Coroutine
 
 
 class Transport:
+    _logger = logging.getLogger()
+
     def __init__(self, loop: typing.Optional[asyncio.AbstractEventLoop]
                  , logger: typing.Optional[logging.Logger]) -> None:
         if loop is None:
-            loop = asyncio.get_event_loop()
+            self._loop = asyncio.get_event_loop()
+        else:
+            self._loop = loop
 
-        self._loop = loop
+        if logger is not None and logger is not self._logger:
+            self._logger = logger
 
-        if logger is None:
-            logger = logging.getLogger()
-
-        self._logger = logger
         self._is_closed = True
         self._stream_reader: asyncio.StreamReader
         self._stream_writer: asyncio.StreamWriter

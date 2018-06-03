@@ -33,9 +33,8 @@ class Client:
         self._auth_infos = set(auth_infos)
         self._default_acl = tuple(default_acl)
         assert len(self._default_acl) >= 1
-        done_future: asyncio.Future[None] = utils.make_done_future(self.get_loop())
-        self._starting: asyncio.Future[None] = done_future
-        self._running: asyncio.Future[None] = done_future
+        self._starting: typing.Optional[utils.Future[None]] = None
+        self._running: asyncio.Future[None] = utils.make_done_future(self.get_loop())
         self._is_stopping = False
 
     def add_session_listener(self) -> session.SessionListener:
@@ -47,12 +46,12 @@ class Client:
     async def start(self) -> None:
         assert not self.is_running()
 
-        if not self._starting.done():
+        if self._starting is not None:
             await utils.shield(self._starting)
             return
 
-        running = self.get_loop().create_task(self._run())
         self._starting = utils.Future(loop=self.get_loop())
+        running = self.get_loop().create_task(self._run())
         session_listener = self._session.add_listener()
 
         try:
@@ -61,11 +60,11 @@ class Client:
             running.cancel()
             await utils.delay_cancellation(running)
             raise
+        else:
+            self._session.remove_listener(session_listener)
         finally:
-            if not running.done():
-                self._session.remove_listener(session_listener)
-
             self._starting.set_result(None)
+            self._starting = None
             self._running = running
 
     def stop(self) -> None:
@@ -444,7 +443,7 @@ class Client:
         return not self._running.done()
 
     def is_stopping(self) -> bool:
-        return not self._is_stopping
+        return self._is_stopping
 
     async def _run(self) -> None:
         session_timeout = self._session.get_timeout()
