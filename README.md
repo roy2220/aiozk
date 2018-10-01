@@ -1,4 +1,4 @@
-# This project is unmaintained! move to the [go version](https://github.com/let-z-go/zk)
+# This project is unmaintained! move to the [go client](https://github.com/let-z-go/zk)
 
 # aiozk
 
