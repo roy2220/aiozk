@@ -1,3 +1,5 @@
+# This project is unmaintained, move to the (go version)[https://github.com/let-z-go/zk]
+
 # aiozk
 
 AsyncIO client for ZooKeeper
